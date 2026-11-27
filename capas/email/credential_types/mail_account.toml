@@ -92,3 +92,19 @@ label = "Sender name"
 kind = "text"
 required = false
 placeholder = "Support team"
+
+[[fields]]
+key = "sent_folder"
+label = "Sent folder"
+kind = "text"
+required = false
+placeholder = "Sent"
+help = "IMAP only: where a copy of each sent mail is kept, marked read. Leave empty to use the folder the server marks as Sent, or one named like it. Enter - to keep no copy. Gmail and Microsoft 365 keep their own copy, so none is added there."
+
+[[fields]]
+key = "ca_certificate"
+label = "CA certificate"
+kind = "text"
+required = false
+placeholder = "-----BEGIN CERTIFICATE----- ..."
+help = "Only if your mail server's certificate comes from your organisation's own certificate authority: paste that CA's certificate (PEM). It is trusted besides the usual ones; the server's certificate and name are still checked."

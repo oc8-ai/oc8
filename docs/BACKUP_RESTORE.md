@@ -23,6 +23,19 @@ It includes:
 - Safe restore rehearsal into `oc8_restore_verify`
 - Live recovery steps and what **not** to do (`docker compose down -v`)
 
+## Organisation export and personal content
+
+The in-app organisation export (permission `backup:export`) is a complete,
+readable copy of the tenant. It deliberately includes the content of
+**personal departments**: runs, files, memory, activity and approvals of
+members' personal agents, which no other administrator can open in the app.
+With a passphrase it also holds every stored credential.
+
+For that reason `backup:export` belongs to the organisation administrator role
+(`org_admin`) only. It cannot be added to a custom role. Treat an export
+archive like the personal content and credentials it contains: encrypt it,
+limit who can read it, and delete copies you no longer need.
+
 ## When to run backups
 
 - Before inviting pilot users

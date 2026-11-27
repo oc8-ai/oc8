@@ -11,10 +11,26 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+#: The `ConnectionRequired` reason (connections/access.py) of a connection
+#: nobody has connected. Every other reason names a remedy (reconnect,
+#: complete the login, confirm a schedule) and is kept as it is.
+_NOT_CONNECTED = "connection_required: this task needs "
+
 
 def unavailable_sentence(name: str, reason: str) -> str:
     """One line the model can read. No stack, no second system hidden."""
     line = " ".join(reason.split())
+    if line.startswith(_NOT_CONNECTED):
+        # The reason is written for a call that asked for the connection
+        # ("this task needs ..."). Nothing has asked yet: read as is, it told
+        # the model the task depends on a connection the agent merely has, and
+        # the model gave up on a task another connection could do (E2E F11).
+        return (
+            f"Connection {name} is not available in this run: it is not connected "
+            "for this agent, so its tools are not offered. If the task can be done "
+            "with your other tools, use your other tools; mention the missing "
+            "connection only if none can. Do not reach it through the shell."
+        )
     if len(line) > 200:
         line = line[:200].rstrip()
     return (
@@ -41,18 +57,29 @@ def notice_for_find(
     connection: str | None,
 ) -> str | None:
     """The dead-connection sentence when a search names that connection."""
-    needle = (connection or query).strip().lower()
-    if not needle:
-        return None
     hits = [
         unavailable_sentence(str(item.get("name", "")), str(item.get("reason", "")))
-        for item in unavailable
-        if str(item.get("name", "")).strip()
-        and str(item.get("name", "")).lower() in needle
+        for item in named_by_find(unavailable, query, connection)
     ]
     if not hits:
         return None
     return "\n".join(hits)
+
+
+def named_by_find(
+    unavailable: Sequence[Mapping[str, Any]],
+    query: str,
+    connection: str | None,
+) -> list[Mapping[str, Any]]:
+    """The unavailable connections a tool search names."""
+    needle = (connection or query).strip().lower()
+    if not needle:
+        return []
+    return [
+        item
+        for item in unavailable
+        if str(item.get("name", "")).strip() and str(item.get("name", "")).lower() in needle
+    ]
 
 
 def connection_by_tool(routes: Mapping[str, Any] | None) -> dict[str, str]:
@@ -113,17 +140,14 @@ def resource_sentence(items: Sequence[Mapping[str, str]]) -> str:
             lines.append(f"{connection}: {name}")
     if not lines:
         return ""
-    return (
-        "Resources you can open with read_resource "
-        "(contents are not loaded yet):\n" + "\n".join(lines)
+    return "Resources you can open with read_resource (contents are not loaded yet):\n" + "\n".join(
+        lines
     )
 
 
 def prompt_sentence(items: Sequence[Mapping[str, str]]) -> str:
     names = [
-        f"{item.get('connection', '')}:{item.get('name', '')}"
-        for item in items
-        if item.get("name")
+        f"{item.get('connection', '')}:{item.get('name', '')}" for item in items if item.get("name")
     ]
     if not names:
         return ""

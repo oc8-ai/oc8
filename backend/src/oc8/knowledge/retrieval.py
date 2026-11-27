@@ -17,7 +17,7 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.authz import Effect, classification_rule, effective_cleared_classes
+from oc8.authz.authority import authority_for_member
+from oc8.authz.permissions import KNOWLEDGE, VIEW, perm
+from oc8.departments.personal import live_department_owner
+from oc8.departments.repo import member_departments
 from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.embedding_policy import (
@@ -101,13 +105,91 @@ def fuse_rrf(ranked_lists: list[list[_Hit]], *, k: int = RRF_K) -> list[_Hit]:
     return sorted(fused.values(), key=lambda h: h.rank_score, reverse=True)
 
 
-async def granted_kb_ids(db: AsyncSession, *, agent: m.Agent) -> set[uuid.UUID]:
+async def _own_kb_ids(db: AsyncSession, *, agent: m.Agent) -> set[uuid.UUID]:
     result = await db.execute(
         select(m.KnowledgeGrant.kb_id).where(
             m.KnowledgeGrant.grantee_id.in_([agent.id, agent.department_id])
         )
     )
     return set(result.scalars().all())
+
+
+#: kb id -> the departments lending it to a personal agent (`lending_departments`).
+Lenders = dict[uuid.UUID, list[m.Department]]
+#: The role claim the run carries for this owner, or None (`lending_departments`).
+OwnerClaim = Callable[[m.OrgMember], Awaitable[str | None]]
+
+
+async def lending_departments(
+    db: AsyncSession, *, agent: m.Agent, owner_claim: OwnerClaim | None = None
+) -> Lenders:
+    """Spec A5 / ruling R3: for an agent of a personal department, each
+    knowledge base granted to a department where its owner holds a real seat
+    (`member_departments(seats_only=True)`: live, standard, a live seat row --
+    `all_departments` is no seat), mapped to every such department -- provided
+    the owner's authority holds `knowledge:view`. Empty for every other agent
+    and for a departed owner (fails closed).
+
+    The owner's authority (ruling U4): the assigned role; else the run's claim
+    for the owner, asked of `owner_claim` (which answers only with the
+    OWNER's claim) only then; else the role of the owner's last token
+    (`last_token_role`); else nothing. The owner is looked up once: an agent
+    with no live owner costs one query and never asks `owner_claim`.
+
+    Read on every call, never cached: a seat or a role taken away takes the
+    bases with it on the agent's next lookup."""
+    owner_id = await live_department_owner(db, agent.id)
+    if owner_id is None:
+        return {}
+    owner = await db.get(m.OrgMember, owner_id, populate_existing=True)
+    if owner is None or owner.deleted_at is not None:
+        return {}
+    claim = None
+    if owner.role_id is None and owner_claim is not None:
+        claim = await owner_claim(owner)
+    authority = await authority_for_member(db, owner, token_role=claim or owner.last_token_role)
+    if perm(KNOWLEDGE, VIEW) not in authority.tenant_wide:
+        return {}
+    departments = await member_departments(db, member=owner, seats_only=True)
+    if not departments:
+        return {}
+    by_id = {d.id: d for d in departments}
+    rows = (
+        await db.execute(
+            select(m.KnowledgeGrant.kb_id, m.KnowledgeGrant.grantee_id).where(
+                m.KnowledgeGrant.tenant_id == agent.tenant_id,
+                m.KnowledgeGrant.grantee_id.in_(by_id),
+            )
+        )
+    ).all()
+    lenders: Lenders = {}
+    for kb_id, grantee_id in rows:
+        lenders.setdefault(kb_id, []).append(by_id[grantee_id])
+    return lenders
+
+
+async def borrowed_kb_sources(
+    db: AsyncSession, *, agent: m.Agent, owner_claim: OwnerClaim | None = None
+) -> dict[uuid.UUID, set[uuid.UUID]]:
+    """Each knowledge base a personal agent borrows from its owner's
+    departments, mapped to the departments lending it (spec A5)."""
+    lenders = await lending_departments(db, agent=agent, owner_claim=owner_claim)
+    return {kb_id: {d.id for d in depts} for kb_id, depts in lenders.items()}
+
+
+async def granted_kb_ids(
+    db: AsyncSession,
+    *,
+    agent: m.Agent,
+    owner_claim: OwnerClaim | None = None,
+    lenders: Lenders | None = None,
+) -> set[uuid.UUID]:
+    """The agent's own grants (to it and to its department) and, for a
+    personal agent, the bases it borrows. `lenders` is an already resolved
+    `lending_departments` for this run, so a caller asking twice resolves once."""
+    if lenders is None:
+        lenders = await lending_departments(db, agent=agent, owner_claim=owner_claim)
+    return await _own_kb_ids(db, agent=agent) | set(lenders)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -346,6 +428,8 @@ async def retrieve_kb_context(
     released_kb_ids: frozenset[uuid.UUID] | None = None,
     skipped_local: list[str] | None = None,
     only_sources: Mapping[str, str] | None = None,
+    owner_claim: OwnerClaim | None = None,
+    lenders: Lenders | None = None,
 ) -> tuple[str, bool]:
     """Returns (context, contains_restricted). `contains_restricted` is true
     when any returned text is restricted or from a local-only base: text that
@@ -384,8 +468,23 @@ async def retrieve_kb_context(
     `only_sources`, when given, maps the `source_uri`s that may be returned
     to the name each is shown under: every other document is left out, and a
     hit's source is shown by that name (`search_chat_files`: the files on
-    the branch a run answers, named by the file the model can read)."""
-    kb_ids = await granted_kb_ids(db, agent=agent)
+    the branch a run answers, named by the file the model can read).
+
+    `owner_claim` and `lenders` are `lending_departments`' input and answer:
+    how to read the owner's claim on this run, or the lenders the caller
+    already resolved for this run."""
+    own_kb_ids = await _own_kb_ids(db, agent=agent)
+    if lenders is None:
+        lenders = await lending_departments(db, agent=agent, owner_claim=owner_claim)
+    kb_ids = own_kb_ids | set(lenders)
+    # A base the agent holds itself, or the member released, is judged by the
+    # agent's frame alone; only a base it merely borrows must also be cleared
+    # by the frame of a department lending it (ruling R3).
+    borrowed_only = {
+        kb_id: depts
+        for kb_id, depts in lenders.items()
+        if kb_id not in own_kb_ids and kb_id not in (released_kb_ids or ())
+    }
     if only_kb_ids is not None:
         # Intersection, never replacement. A `#` reference cannot reach a base
         # the agent has no grant to.
@@ -462,11 +561,22 @@ async def retrieve_kb_context(
         return "", False
 
     cleared = effective_cleared_classes(frame or {})
+    # The owner reads a base through each department lending it, so what any
+    # one of them clears is cleared -- never beyond the agent's own frame
+    # (ruling T6-3).
+    cleared_by_kb = {
+        kb_id: cleared
+        & frozenset().union(*(effective_cleared_classes(d.frame or {}) for d in depts))
+        for kb_id, depts in borrowed_only.items()
+    }
     # A local-only base's text reaches a local model only, like restricted text.
     cleared_hits = [
         h
         for h in all_hits
-        if classification_rule(h.classification, cleared, model_locality).effect is Effect.ALLOW
+        if classification_rule(
+            h.classification, cleared_by_kb.get(h.kb_id, cleared), model_locality
+        ).effect
+        is Effect.ALLOW
         and (not h.local_only or model_locality == "local")
     ]
     if not cleared_hits:

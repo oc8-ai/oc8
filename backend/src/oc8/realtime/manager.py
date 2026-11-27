@@ -15,7 +15,7 @@ from typing import Literal, Protocol
 
 import redis.asyncio as redis
 
-from oc8.realtime.bus import channel_for
+from oc8.realtime.bus import CONTROL_KEY, CONTROL_MEMBER_GONE, channel_for
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,8 @@ def _route(conn: _Conn, raw: str) -> tuple[str | None, str | None]:
         return (raw if conn.feed else None), None
     if not isinstance(env, dict):
         return (raw if conn.feed else None), None
+    if CONTROL_KEY in env:
+        return None, None  # for the manager, never for a browser
     if "audience" in env:
         audience = env["audience"]
         if not isinstance(audience, list) or conn.member_id is None:
@@ -275,7 +277,24 @@ class ConnectionManager:
                 logger.debug("closing a revoked member socket failed", exc_info=True)
         await self.disconnect(tenant_id, conn.ws)
 
+    async def _control(self, tenant_id: uuid.UUID, text: str) -> None:
+        """Act on a control envelope (`bus.control_envelope`). Unknown kinds
+        are ignored; none is ever sent to a socket."""
+        try:
+            msg = json.loads(text)
+        except ValueError:
+            return
+        if not isinstance(msg, dict) or msg.get(CONTROL_KEY) != CONTROL_MEMBER_GONE:
+            return
+        member_id = msg.get("member_id")
+        for conn in list(self._conns.get(tenant_id, {}).values()):
+            if member_id and conn.member_id == member_id:
+                await self._close(tenant_id, conn)
+
     async def _broadcast(self, tenant_id: uuid.UUID, text: str) -> None:
+        if text.startswith('{"' + CONTROL_KEY + '"'):
+            await self._control(tenant_id, text)
+            return
         dead: list[SupportsSend] = []
         for conn in list(self._conns.get(tenant_id, {}).values()):
             frame, watched_run = _route(conn, text)

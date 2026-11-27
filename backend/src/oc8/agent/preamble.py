@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.control_tools import (
     _acting_token_role,
+    _owner_claim,
     _resolve_agent_actor,
     copilot_person,
     person_token_role,
@@ -61,10 +62,11 @@ from oc8.chat.turn_context import flattened_task_text_for_model
 from oc8.connections.tool_connection import tool_connections
 from oc8.connections.usable import needs_department
 from oc8.copilot.notes import member_behind_run_task
-from oc8.knowledge.retrieval import granted_kb_ids, retrieve_kb_context
+from oc8.knowledge.retrieval import granted_kb_ids, lending_departments, retrieve_kb_context
 from oc8.memory.router import retrieve_context
 from oc8.modelrouter import NeutralMessage
 from oc8.modelrouter.types import ImagePart, TextPart
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.skills.runtime import LoadedSkill, catalog_block, load_assigned_skills
 
 logger = logging.getLogger(__name__)
@@ -291,6 +293,11 @@ async def roster_block(
                 ),
             )
             rows = [(a, dept) for a, dept in rows if runnable_with(reach, a)]
+        else:
+            # Nobody behind the turn: `_delegate` crosses no department then
+            # (`_member_may_reach_department` fails closed), and a personal
+            # agent answers to its owner alone -- never name one.
+            rows = [(a, dept) for a, dept in rows if dept.kind != DEPARTMENT_KIND_PERSONAL]
         if not rows:
             return None
         narrowings = await _published_narrowings(db, [a for a, _ in rows])
@@ -554,6 +561,11 @@ async def build_run_preamble(
     if memory_ctx:
         _per_turn(memory_ctx)
 
+    # Resolved once for this run (spec A5): what the up-front retrieval reads
+    # and what `has_knowledge` offers search_knowledge for cannot disagree.
+    lenders = await lending_departments(
+        db, agent=agent, owner_claim=_owner_claim(db, tenant_id=tenant_id, run_id=run_id)
+    )
     kb_ctx, contains_restricted = await retrieve_kb_context(
         db,
         agent=agent,
@@ -561,11 +573,12 @@ async def build_run_preamble(
         query_text=query_text,
         frame=frame,
         model_locality=model_locality,
+        lenders=lenders,
     )
     if kb_ctx:
         _per_turn(kb_ctx)
     contains_restricted = contains_restricted or replay_restricted
-    has_knowledge = bool(await granted_kb_ids(db, agent=agent))
+    has_knowledge = bool(await granted_kb_ids(db, agent=agent, lenders=lenders))
 
     instruction_file_count = (
         await db.scalar(

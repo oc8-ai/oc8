@@ -207,3 +207,26 @@ async def test_close_drops_one_connection_and_the_next_call_handshakes_again() -
 async def test_close_of_an_unknown_connection_is_a_no_op() -> None:
     await mcp_pool.close(uuid.uuid4())
     assert _FakeSession.closed == 0
+
+
+async def test_a_call_is_bound_to_its_run_and_only_for_that_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pooled session is shared between runs, so the run whose files a call
+    keeps and resolves is bound per call (oc8.agent.run_files)."""
+    from oc8.agent.run_files import RunFiles, current_run_files
+
+    seen: list[RunFiles | None] = []
+
+    async def recording_call(self: _FakeSession, tool: str, arguments: dict[str, Any]) -> str:
+        seen.append(current_run_files())
+        return "ok"
+
+    monkeypatch.setattr(_FakeSession, "call", recording_call)
+    conn = uuid.uuid4()
+    files = RunFiles(tenant_id=uuid.uuid4(), run_id=uuid.uuid4(), agent_id=uuid.uuid4())
+    await _call(conn, files=files)
+    await _call(conn, reusable=False, files=files)
+    await _call(conn)
+    assert seen == [files, files, None]
+    assert current_run_files() is None

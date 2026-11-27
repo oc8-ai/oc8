@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
@@ -41,12 +42,14 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import aliased
 
+from oc8.departments.repo import is_private_to, private_department_ids
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL, Department
 from oc8.models.ops import ApprovalRequest
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from oc8.authz.scope import DecisionActor
+    from oc8.authz.scope import DecisionActor, DepartmentScope
 
 #: A list endpoint with no ceiling is a denial of service with a friendly name;
 #: §5 fixes the default at 100 and the ceiling at 500.
@@ -55,6 +58,20 @@ MAX_LIMIT = 500
 
 #: The approval an offer of direct access raises (copilot direct access §3).
 DIRECT_ACCESS_ACTION = "direct_access"
+
+#: The cards a personal department files that stay with the admins (ruling
+#: R2): what they say is metadata -- a budget incident's spend, a blast-radius
+#: alarm's title, record count, entity and record reference (ruling U3). They
+#: are seen, decided and announced like a standard department's card. Every
+#: other card a personal agent raises is its owner's alone (spec A4).
+ADMIN_KEPT_ACTIONS: frozenset[str] = frozenset({"budget_incident", "blast_radius"})
+
+#: The admin-kept cards a personal department's OWNER may decide too, in their
+#: own department (ruling U3): stopping or letting their own agent's run go on
+#: is theirs to say, while lifting a budget stays `budget:manage`. Read by
+#: `approvals.service._may_apply_the_effect` and by `raise_approval`, which
+#: tells the owner of one.
+OWNER_DECIDES_TOO: frozenset[str] = frozenset({"blast_radius"})
 
 
 def is_member_owned(approval: ApprovalRequest) -> bool:
@@ -135,6 +152,97 @@ def owned_by(member_id: uuid.UUID) -> ColumnElement[bool]:
     )
 
 
+def is_personal_card(action_type: str, *, department_kind: str | None) -> bool:
+    """A card a personal department files for its owner alone (spec A4): every
+    kind but `ADMIN_KEPT_ACTIONS`. Its title, detail and payload are what the
+    owner's agent was doing, so no grant -- `approval:view_any`,
+    `approval:decide_any`, `all_departments` -- reaches it."""
+    return department_kind == DEPARTMENT_KIND_PERSONAL and action_type not in ADMIN_KEPT_ACTIONS
+
+
+def personal_owner_of(
+    row: ApprovalRequest, *, department_kind: str | None, owner_member_id: uuid.UUID | None
+) -> uuid.UUID | None:
+    """The member who alone sees and decides this card because it is a
+    personal department's (`is_personal_card`): the department's
+    `owner_member_id`. None for every other card (an `ADMIN_KEPT_ACTIONS` one
+    included) -- and for a personal card with no owner, which therefore nobody
+    sees (fail closed, like an owned card whose member cannot be read:
+    `direct_access_owner`)."""
+    if not is_personal_card(row.action_type, department_kind=department_kind):
+        return None
+    return owner_member_id
+
+
+async def admin_kept_approval_ids(
+    db: AsyncSession, approval_ids: Collection[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of these cards are `ADMIN_KEPT_ACTIONS` ones, for the audit
+    reader deciding whether a decision line's reason stays with the admins
+    (ruling T4-4). Ids and the kind only -- nothing of the card is returned --
+    so no reader scope applies. An id that resolves to nothing is simply not
+    in the answer, which keeps its reason stripped (fail closed)."""
+    if not approval_ids:
+        return set()
+    rows = await db.execute(
+        select(ApprovalRequest.id).where(
+            ApprovalRequest.id.in_(approval_ids),
+            ApprovalRequest.action_type.in_(ADMIN_KEPT_ACTIONS),
+        )
+    )
+    return set(rows.scalars().all())
+
+
+def private_to_caller(scope: DepartmentScope) -> ColumnElement[bool]:
+    """`is_private_to` over `approval_request`, for `visible_approvals`: a
+    personal department's card that this caller does not own, the admins'
+    `ADMIN_KEPT_ACTIONS` aside. `department_id IS NOT NULL` first, because
+    `NULL IN (...)` is NULL and `NOT NULL` would hide the tenant-wide budget
+    incident from everybody."""
+    return and_(
+        ApprovalRequest.department_id.isnot(None),
+        ApprovalRequest.action_type.not_in(ADMIN_KEPT_ACTIONS),
+        ApprovalRequest.department_id.in_(private_department_ids(scope)),
+    )
+
+
+async def card_department(
+    db: AsyncSession, department_id: uuid.UUID | None
+) -> tuple[str | None, uuid.UUID | None]:
+    """`(kind, owner_member_id)` of the department a card is filed in, read
+    from the database (soft-deleted departments included: their history stays
+    private). `(None, None)` for a tenant-wide card or an unreadable one."""
+    if department_id is None:
+        return None, None
+    found = (
+        await db.execute(
+            select(Department.kind, Department.owner_member_id).where(
+                Department.id == department_id
+            )
+        )
+    ).one_or_none()
+    if found is None:
+        return None, None
+    return found[0], found[1]
+
+
+async def private_card(db: AsyncSession, row: ApprovalRequest, *, actor: DecisionActor) -> bool:
+    """Whether this card is a personal department's that the actor does not
+    own -- the one question `load_for_actor` and `decide_approval` ask BEFORE
+    the department term, so neither `may_view` nor `may_decide` (both True for
+    anybody unrestricted) can override ownership. Owned means
+    `scope.personal_owned` (`is_private_to`): the owner, seated, and present."""
+    kind, owner_member_id = await card_department(db, row.department_id)
+    if not is_personal_card(row.action_type, department_kind=kind):
+        return False
+    owner = personal_owner_of(row, department_kind=kind, owner_member_id=owner_member_id)
+    return (
+        owner is None
+        or owner != actor.member.id
+        or is_private_to(actor.scope, kind=kind, department_id=row.department_id)
+    )
+
+
 async def visible_approvals(
     db: AsyncSession,
     *,
@@ -179,7 +287,10 @@ async def visible_approvals(
     else:
         # Seatless: nothing departmental -- `IN ()` is never built -- only own cards.
         departmental = false()
-    others = not_(_owned_clause())
+    # A personal department's card is its owner's alone (spec A4): no
+    # unrestricted branch, no department picker and no seat reaches it for
+    # anybody else. The owner sees it through their own seat (`departmental`).
+    others = and_(not_(_owned_clause()), not_(private_to_caller(scope)))
     stmt = stmt.where(or_(mine, others if departmental is None else and_(others, departmental)))
 
     # `id` breaks the tie. `created_at` defaults to `now()`, which in Postgres is
@@ -272,6 +383,10 @@ async def load_for_actor(
         return None
     if is_member_owned(row):
         return row if direct_access_owner(row) == actor.member.id else None
+    # Before `may_view`, which answers True for anybody unrestricted: a
+    # personal department's card is its owner's alone (`private_card`).
+    if await private_card(db, row, actor=actor):
+        return None
     if not actor.scope.may_view(row.department_id):
         return None
     return row

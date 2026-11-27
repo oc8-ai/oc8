@@ -15,6 +15,7 @@ from oc8 import models as m
 from oc8.agent.preamble import Resume
 from oc8.agents.versioning import resolve_version
 from oc8.approvals.repo import DIRECT_ACCESS_ACTION
+from oc8.authz.pdp import frame_allows_key
 from oc8.chat.digest import build_work_digest
 from oc8.chat.replay import chat_replay_of
 from oc8.connections.acting import (
@@ -274,6 +275,75 @@ def _chat_channel_sender_of(run: m.AgentRun) -> tuple[str, str] | None:
     if not channel or not external_id:
         return None
     return str(channel), str(external_id)
+
+
+def _merge_leg_calls(
+    raw: Any, decided: dict[str, str], leg_calls: list[Any], *, leg_from: int | None = None
+) -> list[Any]:
+    """A run's tool calls after a resumed leg: the earlier legs' calls, then
+    this leg's, numbered on from the earlier steps (each leg counts its own
+    steps from 1).
+
+    A call held for a person is settled by its decision: an approved call
+    this leg carried out is listed once, as this leg's; one it did not is kept
+    as `approved`; a rejected one never ran and stays, `denied`. An entry this
+    leg recorded again is listed once.
+
+    Only an unfinished earlier attempt of THIS leg can have stored such
+    repeats (a runtime that commits as it goes leaves them behind), and only
+    from `leg_from` on: the stored list's length when this leg first began,
+    which the executor marks (`legCallsFrom`). Without that marker nothing is
+    a repeat -- an earlier leg's read and this leg's same read are two reads.
+    Within the marked part, the repeats are the longest tail that repeats
+    the START of this leg, step for step, compared by step, call and state
+    and never by timing (a rerun takes its own time). The same call made
+    twice is two entries."""
+    from oc8.runtime.approval_resume import call_signature
+
+    def signature(call: dict[str, Any]) -> str:
+        arguments = call.get("arguments")
+        return call_signature(
+            str(call.get("tool", "")), arguments if isinstance(arguments, dict) else {}
+        )
+
+    def identity(call: Any) -> Any:
+        if not isinstance(call, dict):
+            return call
+        return (call.get("step"), signature(call), call.get("state"))
+
+    leg = list(leg_calls)
+    stored = list(raw) if isinstance(raw, list) else []
+    own = len(stored) - leg_from if leg_from is not None and 0 <= leg_from <= len(stored) else 0
+    repeated = 0
+    for size in range(min(own, len(leg)), 0, -1):
+        tail, head = stored[-size:], leg[:size]
+        if all(identity(a) == identity(b) for a, b in zip(tail, head, strict=True)):
+            repeated = size
+            break
+    stored = stored[: len(stored) - repeated]
+    replayed = {signature(c) for c in leg if isinstance(c, dict)}
+    calls: list[Any] = []
+    for call in stored:
+        if isinstance(call, dict) and call.get("state") == "awaiting_approval":
+            sig = signature(call)
+            verdict = decided.get(sig)
+            if verdict == "approve":
+                if sig in replayed:
+                    continue
+                call = {**call, "state": "approved"}
+            elif verdict == "reject":
+                call = {**call, "state": "denied"}
+        calls.append(call)
+    offset = max(
+        (c["step"] for c in calls if isinstance(c, dict) and isinstance(c.get("step"), int)),
+        default=0,
+    )
+    return calls + [
+        {**c, "step": c["step"] + offset}
+        if isinstance(c, dict) and isinstance(c.get("step"), int)
+        else c
+        for c in leg
+    ]
 
 
 async def requeue_if_already_decided(db: AsyncSession, *, run: m.AgentRun) -> bool:
@@ -740,8 +810,16 @@ async def _resolve_mcp_connection(
     # Sorted so two runs of the same agent always decide identically. Keys are
     # connection NAMES (the frame keys tools by name, not id) -- the same shape
     # `PUT /agents/{id}/narrowing` validates against.
+    # A closed frame (a personal department's) grants only what it lists, so a
+    # pinned key it lacks selects no login -- the PDP's rule (`frame_allows_key`).
+    dept = (
+        await db.get(m.Department, agent.department_id) if agent.department_id is not None else None
+    )
+    frame = (dept.frame or {}) if dept is not None else None
     enabled = sorted(
-        key for key, policy in tools.items() if isinstance(policy, dict) and policy.get("enabled")
+        key
+        for key, policy in tools.items()
+        if isinstance(policy, dict) and policy.get("enabled") and frame_allows_key(frame, key)
     )
 
     #: Which of this agent's enabled tool keys name a Credential-backed login.
@@ -774,12 +852,10 @@ async def _resolve_mcp_connection(
     # would, and wins over the untargeted legacy department lookup exactly
     # like a pin does.
     dept_tools: dict[str, Any] = {}
-    if enabled and agent.department_id is not None:
-        dept = await db.get(m.Department, agent.department_id)
-        if dept is not None:
-            raw_dept_tools = (dept.frame or {}).get("tools")
-            if isinstance(raw_dept_tools, dict):
-                dept_tools = raw_dept_tools
+    if enabled and frame is not None:
+        raw_dept_tools = frame.get("tools")
+        if isinstance(raw_dept_tools, dict):
+            dept_tools = raw_dept_tools
 
     def _dept_default(key: str) -> str | None:
         entry = dept_tools.get(key)
@@ -1202,11 +1278,43 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # the engine the per-call verdicts so it executes them instead of
             # suspending again.
             approvals = run.context.get("resolved_tool_approvals", [])
-            pre_decided: dict[str, dict[str, Any]] = {}
-            if approvals:
-                from oc8.runtime.approval_resume import pre_decided_map
+            pre_decided = None
+            from oc8.runtime.approval_resume import live_decisions, pre_decided_map
 
-                pre_decided = pre_decided_map(approvals)
+            if approvals:
+                # Each approval covers one run of its call: what earlier legs
+                # used up is no longer a decision (`claim_approval`).
+                pre_decided = await live_decisions(
+                    db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
+                )
+            # The calls the legs before this one recorded: this leg's final
+            # write replaces `toolCalls` with its own, so a resumed run would
+            # lose the reads that led up to its held write (E2E F10).
+            resumed_leg = bool(
+                approvals or clarifications or run.context.get("resolved_direct_access")
+            )
+            # Every leg keeps them (`_all_legs_calls`), not only a resumed one.
+            earlier_calls = list(run.context.get("toolCalls") or [])
+            # Where this leg's own calls begin in the stored list. Set when
+            # the leg first starts and cleared by its final write, so a mark
+            # found here was left by an attempt of this leg that never
+            # finished: its calls, stored as it went, may come again in this
+            # leg's result (`_merge_leg_calls`).
+            leg_from: int | None = None
+            if resumed_leg:
+                marked = run.context.get("legCallsFrom")
+                if isinstance(marked, int) and not isinstance(marked, bool):
+                    leg_from = marked
+                else:
+                    await merge_context(
+                        db,
+                        run,
+                        {
+                            "legCallsFrom": len(earlier_calls)
+                            if isinstance(earlier_calls, list)
+                            else 0
+                        },
+                    )
             # The resume text tells only the answer that woke this leg. Both
             # lists accumulate over the run, so an unconsumed offer answer is
             # the waker: the run carries on with the request (a held write's
@@ -1297,11 +1405,6 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # Where the answer's record links were issued (`link_scope`); read
             # here, while `run` is live.
             links_context = {"chat_session_id": run.context.get("chat_session_id")}
-            # The calls earlier legs of this run made (a run resumed after an
-            # approval or an answer): kept ahead of this leg's own at its
-            # terminal write, so the run's trace and its reply's work digest
-            # cover the whole run, not only the last leg.
-            earlier_calls = list(run.context.get("toolCalls") or [])
 
             stopped_by_gate = False
             stopped_by_owner_change = False
@@ -1520,7 +1623,22 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         run,
                         {
                             "output": result.output,
-                            **_all_legs_calls(earlier_calls, result.tool_calls),
+                            # A resumed leg settles its held calls and numbers on from the
+                            # earlier legs (`_merge_leg_calls`); any other leg keeps the
+                            # earlier legs' calls ahead of its own (`_all_legs_calls`).
+                            **(
+                                {
+                                    "toolCalls": _merge_leg_calls(
+                                        earlier_calls,
+                                        pre_decided_map(approvals),
+                                        result.tool_calls,
+                                        leg_from=leg_from,
+                                    ),
+                                    "legCallsFrom": None,
+                                }
+                                if resumed_leg
+                                else _all_legs_calls(earlier_calls, result.tool_calls)
+                            ),
                             "contains_restricted": bool(run.context.get("contains_restricted"))
                             or result.contains_restricted,
                             **_leg_model(result),
@@ -1666,7 +1784,22 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         run,
                         {
                             "output": result.output,
-                            **_all_legs_calls(earlier_calls, result.tool_calls),
+                            # A resumed leg settles its held calls and numbers on from the
+                            # earlier legs (`_merge_leg_calls`); any other leg keeps the
+                            # earlier legs' calls ahead of its own (`_all_legs_calls`).
+                            **(
+                                {
+                                    "toolCalls": _merge_leg_calls(
+                                        earlier_calls,
+                                        pre_decided_map(approvals),
+                                        result.tool_calls,
+                                        leg_from=leg_from,
+                                    ),
+                                    "legCallsFrom": None,
+                                }
+                                if resumed_leg
+                                else _all_legs_calls(earlier_calls, result.tool_calls)
+                            ),
                             "contains_restricted": bool(run.context.get("contains_restricted"))
                             or result.contains_restricted,
                             **_leg_model(result),
@@ -1872,18 +2005,54 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     if run.source == "chat" and new_state is RunState.FAILED:
                         await _tell_unread_inputs(db, run, channel_replies)
                     if new_state is RunState.WAITING_FOR_APPROVAL:
-                        # Same reason as the waiting_for_input park above: the
-                        # run is suspended, not finished, so nothing else tells
-                        # the Telegram sender that their request is now sitting
-                        # in somebody's approval queue.
+                        stopped = False
+                        requeued = False
+                        # Close the parking race (see requeue_if_already_decided):
+                        # an operator may have decided the held call while this run
+                        # was still parking. Publish only after the transition
+                        # below commits, mirroring the approvals endpoint.
+                        if await requeue_if_already_decided(db, run=run):
+                            pending_runs.append(run.id)
+                            requeued = True
+                            logger.info(
+                                "run %s: decision for the held call arrived while "
+                                "parking, re-queued immediately",
+                                run_id,
+                            )
+                        elif await _cancellation_kind(db, run_id) is not None:
+                            # A Stop that landed while the run still ran found
+                            # nothing parked to wake; the park must honour it,
+                            # or the run waits for ever on a card nobody needs.
+                            from oc8.runtime.cancellation import release_parked_run
+
+                            await release_parked_run(db, run)
+                            pending_runs.append(run.id)
+                            stopped = True
+                            logger.info("run %s: stopped while parking, re-queued to end", run_id)
                         # The person's own "always allow" rule answers their
                         # card now, as they would (approvals.allow_rules). It
                         # never fails the park: on any error the card stays
-                        # pending and the run waits, as without a rule.
-                        auto_resumed = await _auto_decide_by_rules(db, run)
-                        # A rule-approved call is not waiting, so the sender is
-                        # told only when the card is still pending.
-                        held_sender = None if auto_resumed else await _current_chat_sender(db, run)
+                        # pending and the run waits, as without a rule. Only a
+                        # card still pending: not one already decided, nor a
+                        # stopped run's closed one.
+                        auto_resumed = (
+                            [] if requeued or stopped else await _auto_decide_by_rules(db, run)
+                        )
+                        if auto_resumed:
+                            pending_runs.extend(auto_resumed)
+                            logger.info(
+                                "run %s: an always-allow rule decided the held call, re-queued",
+                                run_id,
+                            )
+                        # Same reason as the waiting_for_input park above: the
+                        # run is suspended, not finished, so nothing else tells
+                        # the Telegram sender that their request is now sitting
+                        # in somebody's approval queue. Not a stopped one: its
+                        # card is already closed and it ends on its next start;
+                        # nor a rule-approved call, which is not waiting.
+                        held_sender = (
+                            None if stopped or auto_resumed else await _current_chat_sender(db, run)
+                        )
                         if held_sender is not None:
                             held_channel, held_external_id = held_sender
                             channel_replies.append(
@@ -1893,23 +2062,6 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                     held_external_id,
                                     _CHAT_WAITING_FOR_APPROVAL,
                                 )
-                            )
-                        if auto_resumed:
-                            pending_runs.extend(auto_resumed)
-                            logger.info(
-                                "run %s: an always-allow rule decided the held call, re-queued",
-                                run_id,
-                            )
-                        # Close the parking race (see requeue_if_already_decided):
-                        # an operator may have decided the held call while this run
-                        # was still parking. Publish only after the transition
-                        # below commits, mirroring the approvals endpoint.
-                        elif await requeue_if_already_decided(db, run=run):
-                            pending_runs.append(run.id)
-                            logger.info(
-                                "run %s: decision for the held call arrived while "
-                                "parking, re-queued immediately",
-                                run_id,
                             )
 
         # The session committed on block exit. Only now is it safe to publish:

@@ -374,6 +374,7 @@ _AGENT_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/api/v1/agents"),
         ("POST", "/api/v1/agents/{}/lifecycle"),
         ("PUT", "/api/v1/agents/{}/narrowing"),
+        ("PUT", "/api/v1/agents/{}/autonomy"),
         ("PUT", "/api/v1/agents/{}/runtime"),
         ("PATCH", "/api/v1/agents/{}/model-config"),
         ("POST", "/api/v1/agents/{}/skills"),

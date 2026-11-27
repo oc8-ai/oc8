@@ -16,12 +16,15 @@ earlier SDK versions -- this repo's locked `mcp` dependency is 2.0.0, whose
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from urllib.parse import quote
 
 import mcp.server.stdio
 import mcp.types as types
 from mcp.server import Server, ServerRequestContext
 
+from .files import FileContent
 from .tools.calendar import CALL_HANDLERS as CALENDAR_HANDLERS
 from .tools.calendar import TOOLS as CALENDAR_TOOLS
 from .tools.files import CALL_HANDLERS as FILES_HANDLERS
@@ -83,8 +86,26 @@ async def _on_call_tool(
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=f"ERROR: {exc}")], is_error=True
         )
+    if isinstance(result, FileContent):
+        return types.CallToolResult(content=_file_content(result))
     text = _result_text(result)
     return types.CallToolResult(content=[types.TextContent(type="text", text=text)])
+
+
+def _file_content(file: FileContent) -> list[types.ContentBlock]:
+    """The details as text, the file as an embedded blob: core keeps the blob
+    as a file of the run, named by the URI's last segment."""
+    return [
+        types.TextContent(type="text", text=_result_text(file.details)),
+        types.EmbeddedResource(
+            type="resource",
+            resource=types.BlobResourceContents(
+                uri=f"attachment:///{quote(file.name, safe='')}",
+                mime_type=file.mime_type,
+                blob=base64.b64encode(file.data).decode(),
+            ),
+        ),
+    ]
 
 
 server = Server("microsoft365", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)

@@ -47,6 +47,7 @@ from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.calls import unique_call_ids
 from oc8.agent.harness.pipeline import GateVerdict
 from oc8.agent.harness.procedures import (
     newly_satisfied_lines,
@@ -78,6 +79,12 @@ from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
+from oc8.agent.harness.stages.b_usage_limit import (
+    record_limit_refusal,
+    reserve_usage,
+    usage_full,
+    usage_limit_reason,
+)
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
     ledger_fingerprint,
@@ -99,21 +106,24 @@ from oc8.agent.harness.step_timing import (
 from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_env import has_oauth_ref
+from oc8.agent.mcp_pool import never_reached_the_tool
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
+from oc8.agent.run_files import RunFiles
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import build_routes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
-from oc8.approvals import raise_approval
+from oc8.approvals import publish_created, raise_approval
 from oc8.audit import append_event
 from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
     Decision,
     Effect,
     effective_tool_policies,
+    has_usage_limit,
     offers_tool,
     required_right,
 )
@@ -149,6 +159,7 @@ from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, TextPart, with_prompt_cache_key
 from oc8.realtime.emit import (
     note_focus,
+    publish_run_content,
     publish_run_reasoning_delta,
     publish_run_step_timing,
     publish_run_token_delta,
@@ -163,7 +174,12 @@ from oc8.records.links import (
     related_links,
 )
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import pre_decided_map, rejection_text
+from oc8.runtime.approval_resume import (
+    Decisions,
+    claim_approval,
+    live_decisions,
+    rejection_text,
+)
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call, write_back_context
@@ -436,7 +452,26 @@ def _local_refusal(tools: Sequence[NeutralTool], mode: ChatMode | None, name: st
     return None
 
 
-def _local_allowed(
+def _taken_call_ids(transcript: Sequence[Mapping[str, Any]], ctx: Mapping[str, Any]) -> set[str]:
+    """Every call id the run already used: in its transcript, and the ones
+    an approval was claimed for."""
+    taken = {
+        str(call.get("id"))
+        for message in transcript
+        for call in message.get("tool_calls") or []
+        if isinstance(call, dict) and call.get("id")
+    }
+    taken.update(
+        str(c["call_id"])
+        for c in ctx.get("consumed_tool_approvals") or []
+        if isinstance(c, dict) and c.get("call_id")
+    )
+    return taken
+
+
+async def _local_allowed(
+    db: DbSession,
+    run: m.AgentRun,
     tools: Sequence[NeutralTool],
     mode: ChatMode | None,
     *,
@@ -445,9 +480,10 @@ def _local_allowed(
     conn: m.McpConnection | None,
     pinned: Mapping[str, Any],
     active_skills: Sequence[LoadedSkill],
-    ctx: Mapping[str, Any],
-) -> list[str]:
-    """Which local-execution tools the shell may run for this step.
+    ctx: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Which local-execution calls the shell may run for this step: by tool
+    name (what an older shell matches on) and by call id.
 
     The shell runs them BEFORE /tools decides, so this is /tools' verdict given
     up front, on the very calls the shell is handed:
@@ -455,24 +491,35 @@ def _local_allowed(
     * offered this leg, and not withheld by the run's mode -- the frame has no
       say, neither tool belongs to a connection (see `authorize`);
     * and the B gate (`_b_gate`, the same computation /tools makes) allows
-      every call of that tool in this step -- or asks, and an operator already
-      approved that exact call. A gate that denies, or asks without an
-      approval, keeps the tool out: the shell posts the call unexecuted and
-      /tools refuses it or raises the approval before anything runs.
+      the call -- or asks, and an operator approved that exact call. Since
+      the call runs here, its approval is CLAIMED here, before it runs, one
+      approval per call (`claim_approval`, recorded with the call id /tools
+      then recognises): two identical calls on one approval let one run. A
+      gate that denies, or asks without an approval left, keeps the call out:
+      the shell posts it unexecuted and /tools refuses it or raises the
+      approval before anything runs.
 
-    Keyed by tool name, because that is what the shell matches on -- so one
-    call of a tool that may not run keeps every call of it from running.
+    A tool name is listed only when EVERY call of it in the step may run, so
+    an older shell, which matches on names, never runs one that may not.
+    `ctx`: the context this /step writes back whole, kept in step.
     """
-    decided = pre_decided_map(ctx.get("resolved_tool_approvals", []) or [])
-    allowed: list[str] = []
+    decisions = await live_decisions(db, context=ctx, tenant_id=run.tenant_id, task_id=run.task_id)
+    names: list[str] = []
+    ids: list[str] = []
+    seen = [c.id for c in calls]
+    repeated = {i for i in seen if seen.count(i) > 1}
     for name in _LOCAL_TOOLS:
         if _local_refusal(tools, mode, name) is not None:
             continue
         mine = [c for c in calls if c.name == name]
         if not mine:
             continue
-        ok = True
+        every = True
         for c in mine:
+            if c.id in repeated:
+                # Never a go-ahead for an id another call shares (fail closed).
+                every = False
+                continue
             sent = ToolCall(id=c.id, name=c.name, arguments=strip_justification(c.arguments)[0])
             verdict = _b_gate(
                 harness,
@@ -485,16 +532,20 @@ def _local_allowed(
                 schemas=ctx.get("tool_schemas", []),
             )
             if verdict.effect == "allow":
+                ids.append(c.id)
                 continue
             if (
                 verdict.effect == "ask"
-                and (decided.get(_call_sig(sent)) or {}).get("decision") == "approve"
+                and decisions.get(_call_sig(sent)) == "approve"
+                and await claim_approval(db, run, decisions, _call_sig(sent), call_id=c.id, ctx=ctx)
+                is not None
             ):
+                ids.append(c.id)
                 continue
-            ok = False
-        if ok:
-            allowed.append(name)
-    return allowed
+            every = False
+        if every:
+            names.append(name)
+    return names, ids
 
 
 async def _answer_withheld_local_calls(
@@ -856,8 +907,12 @@ def _held_call_verdict(
     arguments: dict[str, Any],
     active_skills: Sequence[LoadedSkill],
     stored: Mapping[str, Any] | None = None,
-) -> tuple[str, str]:
-    """What happens to a held connection call now: ("run" | "refuse" | "park", why).
+    decisions: Decisions | None = None,
+) -> tuple[str, str, bool]:
+    """What happens to a held connection call now: ("run" | "refuse" | "park",
+    why, whether it runs on an approval). A call that runs on one has it
+    claimed by the caller BEFORE it runs, and parks when none is left -- `why`
+    is then the reason to ask again.
 
     An answered elicitation re-runs the call on a later /step. It runs NOW, so
     it is decided now, as /tools would decide it, on exactly the `arguments`
@@ -896,16 +951,14 @@ def _held_call_verdict(
         # Always the connection's tool, whatever core tool shares its name.
         routed=True,
     )
-    held_entry = (
-        pre_decided_map(ctx.get("resolved_tool_approvals", []) or []).get(_call_sig(held)) or {}
-    )
-    verdict = held_entry.get("decision")
+    held_decisions = decisions if decisions is not None else Decisions(ctx)
+    verdict = held_decisions.get(_call_sig(held))
     if decision.effect is Effect.DENY:
-        return "refuse", decision.reason or "denied"
+        return "refuse", decision.reason or "denied", False
     if verdict == "reject":
-        return "refuse", rejection_text(held_entry)
+        return "refuse", rejection_text(held_decisions.entry(_call_sig(held))), False
     if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
-        return "park", decision.reason or ""
+        return "park", decision.reason or "", False
     gate = _b_gate(
         Harness.from_run_context(dict(ctx)),
         held,
@@ -917,10 +970,12 @@ def _held_call_verdict(
         schemas=ctx.get("tool_schemas", []),
     )
     if gate.effect == "deny":
-        return "refuse", gate.reason or "denied"
+        return "refuse", gate.reason or "denied", False
     if gate.effect == "ask" and verdict != "approve":
-        return "park", gate.preview or ""
-    return "run", ""
+        return "park", gate.preview or "", False
+    if decision.effect is Effect.REQUIRE_APPROVAL or gate.effect == "ask":
+        return "run", decision.reason or gate.preview or "", True
+    return "run", "", False
 
 
 async def _park_held_call(
@@ -945,25 +1000,18 @@ async def _park_held_call(
         action_type="tool_send",
         title=f"{agent.name} wants to call {tool}",
         detail=reason,
-        payload={"tool": tool, "arguments": arguments, "justification": "", "preview": reason},
+        payload={
+            "tool": tool,
+            "arguments": arguments,
+            "justification": "",
+            "preview": reason,
+            "run_id": str(run.id),
+        },
     )
     ctx["pending_elicitation"] = {**pending, "arguments": arguments, "merged": True}
     ctx["isolated_result"] = {"status": "waiting_for_approval", "output": reason}
     run.context = ctx
-    from oc8.realtime.bus import get_event_bus
-
-    await get_event_bus().publish_event(
-        run.tenant_id,
-        "approval.created",
-        {
-            "approval_id": str(ar.id),
-            "action_type": ar.action_type,
-            "status": ar.status,
-            "title": ar.title,
-            "detail": ar.detail,
-        },
-        source=f"oc8/approval/{ar.id}",
-    )
+    await publish_created(db, ar)
 
 
 async def _finish_elicitation(
@@ -1011,7 +1059,13 @@ async def _finish_elicitation(
         (item for item in await _connections(db, run, dept) if item.name == connection_name),
         None,
     )
-    effect, why = (
+    # An approval covers one run of the call it approved, claimed before it
+    # runs (`claim_approval`).
+    decisions = await live_decisions(
+        db, context=dict(ctx), tenant_id=run.tenant_id, task_id=run.task_id
+    )
+    held_sig = _call_sig(ToolCall(id="held", name=tool, arguments=arguments))
+    effect, why, on_approval = (
         _held_call_verdict(
             agent=agent,
             dept=dept,
@@ -1024,10 +1078,17 @@ async def _finish_elicitation(
             arguments=arguments,
             active_skills=active_skills,
             stored=pending,
+            decisions=decisions,
         )
         if conn is not None and tool
-        else ("refuse", "")
+        else ("refuse", "", False)
     )
+    if effect == "run" and on_approval:
+        if await claim_approval(db, run, decisions, held_sig, ctx=ctx) is None:
+            # A racing request used the approval: a person is asked again.
+            effect = "park"
+        else:
+            why = ""
     if conn is not None and tool:
         # Audited like any call: the held re-run is a new one.
         await append_event(
@@ -1089,10 +1150,37 @@ async def _finish_elicitation(
             writes=held_writes,
             idempotent=held_idempotent,
         )
+        held_hold = (
+            await reserve_usage(
+                tenant_id=run.tenant_id,
+                agent_id=agent.id,
+                tool_key=conn.name,
+                tool=tool,
+                policy=effective_tool_policies(
+                    dept.frame if dept is not None else {}, pinned["narrowing"] or {}
+                ).get(conn.name),
+            )
+            if replayed is None
+            else None
+        )
         if replayed is not None:
             output = replayed
+        elif held_hold is not None and held_hold.refusal is not None:
+            await record_limit_refusal(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=agent.id,
+                tool=tool,
+                arguments=arguments,
+                refusal=held_hold.refusal,
+                originating_operator=ctx.get("originating_operator"),
+            )
+            output = held_hold.refusal
         else:
             dispatched = True
+            # Whether the call reached the tool: only one that never did (its
+            # environment or session could not be set up) gives its count back.
+            held_reached = False
             try:
                 # `ctx` is written back whole below: the call to action goes in too.
                 launch = await _mcp_env(conn, db, run, tool=tool, ctx=ctx)
@@ -1102,6 +1190,7 @@ async def _finish_elicitation(
                 command, args = wrap_with_requirements(
                     cfg.get("command", ""), cfg.get("args", []), cfg
                 )
+                held_reached = True
                 output = await mcp_pool.call(
                     conn.id,
                     command=command,
@@ -1115,6 +1204,7 @@ async def _finish_elicitation(
                     http_tools=list(cfg.get("http_tools", [])),
                     login=resolve_http_login(cfg, env),
                     reusable=launch.reusable,
+                    files=RunFiles.of(run),
                 )
                 await record_for(
                     db,
@@ -1128,6 +1218,8 @@ async def _finish_elicitation(
             except ElicitationNeeded as exc:
                 # Asked again: suspend for the operator, as the engine does and
                 # as /tools does on a first question -- not on to the model.
+                if held_hold is not None:
+                    await held_hold.settle(succeeded=False)
                 ctx["pending_elicitation"] = {
                     "connection": connection_name,
                     "tool": tool,
@@ -1151,6 +1243,10 @@ async def _finish_elicitation(
                 return "waiting_for_input", exc.message
             except Exception as exc:
                 output = f"ERROR: {exc}"
+                held_reached = held_reached and not never_reached_the_tool(exc)
+            if held_hold is not None:
+                # Reached the tool: counts, even if it failed.
+                await held_hold.settle(succeeded=held_reached)
         if not output.startswith("ERROR:"):
             # Linked like any tool result (the replay record above stays raw),
             # so the answered call's records carry oc8_url too.
@@ -1242,6 +1338,10 @@ class StepResult(BaseModel):
     #: not naming the tool means "do not run it"; the shell then posts the call
     #: without a result and gets the "was not executed locally" refusal.
     local_allowed: list[str] = []
+    #: The same go-ahead per call id, for a shell that reads it: a step with
+    #: two identical calls and one approval lets exactly one of them run,
+    #: where the name list above can only allow both or neither.
+    local_allowed_calls: list[str] = []
 
 
 @router.post(
@@ -1301,7 +1401,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         await db.commit()
         if closed_step_timing is not None:
             await publish_run_step_timing(
-                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+                run.tenant_id,
+                run_id=run.id,
+                agent_id=run.agent_id,
+                db=db,
+                timing=step_timing_dto(closed_step_timing),
             )
         return StepResult(done=True, text=reason, status_override="interrupted")
 
@@ -1344,7 +1448,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             # all, the same ordering `publish_run_tool_call`'s own call site
             # already gets right.
             await publish_run_step_timing(
-                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+                run.tenant_id,
+                run_id=run.id,
+                agent_id=run.agent_id,
+                db=db,
+                timing=step_timing_dto(closed_step_timing),
             )
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
@@ -1645,7 +1753,9 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # (agent/engine.py's _live_token_delta) -- transient, no DB write,
         # since the full text still lands durably below once the turn
         # completes (ctx["transcript"] + the final db.commit()).
-        await publish_run_token_delta(run.tenant_id, run_id=run.id, text=text)
+        await publish_run_token_delta(
+            run.tenant_id, run_id=run.id, agent_id=run.agent_id, db=db, text=text
+        )
 
     # The step a live reasoning fragment belongs to; set as each step opens.
     live_step = {"no": 0}
@@ -1654,7 +1764,12 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # Same no-DB-write rule as _live_token_delta: the step's reasoning
         # lands on its stepTimings entry (note_reasoning) when it ends.
         await publish_run_reasoning_delta(
-            run.tenant_id, run_id=run.id, step=live_step["no"], text=text
+            run.tenant_id,
+            run_id=run.id,
+            agent_id=run.agent_id,
+            db=db,
+            step=live_step["no"],
+            text=text,
         )
 
     async def _complete(
@@ -1913,6 +2028,10 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             if result.usage.tokens_in > 0
             else prompt_token_fallback(resolved_messages)
         )
+        # Before anything is booked against a call id: one reused -- in this
+        # turn, earlier in the run, or by a claimed approval -- is renamed,
+        # here and in what the model sees.
+        unique_call_ids(result.tool_calls, _taken_call_ids(transcript, ctx))
         transcript.append(
             _from_message(
                 NeutralMessage(
@@ -1975,6 +2094,20 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
 
     harness.store(ctx)
     ctx["transcript"] = transcript
+    # Before the commit: a local call's approval is claimed here, in the
+    # transaction that writes `ctx` back (`_local_allowed`).
+    local_names, local_ids = await _local_allowed(
+        db,
+        run,
+        tools,
+        mode_from_context(ctx),
+        calls=[t for t in result.tool_calls if t.id not in handed],
+        harness=harness,
+        conn=conn,
+        pinned=pinned,
+        active_skills=active_skills,
+        ctx=ctx,
+    )
     run.context = ctx
     await db.commit()
     if consumed_inputs:
@@ -1986,7 +2119,13 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     # earlier (right when finish_step ran, above) could hand out a live
     # event for a step this request then failed to commit at all.
     for timing in finished_step_timings:
-        await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=step_timing_dto(timing))
+        await publish_run_step_timing(
+            run.tenant_id,
+            run_id=run.id,
+            agent_id=run.agent_id,
+            db=db,
+            timing=step_timing_dto(timing),
+        )
 
     # Reaching here with no tool call and open todos means the round cap (or
     # the step budget) was hit, not that everything got done -- say so in the
@@ -2073,6 +2212,12 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 is not None
             ):
                 break
+            if has_usage_limit(
+                effective_tool_policies(frame, pinned["narrowing"] or {}),
+                connection_key=conn.name if conn is not None else None,
+                tool=t.name,
+            ):
+                break
             tool_tiers[t.id] = "read"
 
     return StepResult(
@@ -2093,16 +2238,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         status_override="failed" if truncated_empty or refused else None,
         parallel_tool_calls=caps.parallel_tool_calls,
         sdk_py=str(ctx.get("oc8_tools_py") or ""),
-        local_allowed=_local_allowed(
-            tools,
-            mode_from_context(ctx),
-            calls=[t for t in result.tool_calls if t.id not in handed],
-            harness=harness,
-            conn=conn,
-            pinned=pinned,
-            active_skills=active_skills,
-            ctx=ctx,
-        ),
+        local_allowed=local_names,
+        local_allowed_calls=local_ids,
     )
 
 
@@ -2241,6 +2378,14 @@ async def _precompute_leading_reads(
             is not None
         ):
             break
+        if has_usage_limit(
+            effective_tool_policies(frame, pinned["narrowing"] or {}),
+            connection_key=conn.name,
+            tool=call.name,
+        ):
+            # Counted at dispatch, one call at a time: a prefetched call would
+            # run before its count.
+            break
         batch.append((call, stripped))
     if len(batch) < 2:
         return {}
@@ -2276,6 +2421,7 @@ async def _precompute_leading_reads(
                     http_tools=list(cfg.get("http_tools", [])),
                     login=resolve_http_login(cfg, env),
                     reusable=launch.reusable,
+                    files=RunFiles.of(run),
                 )
                 error = None
             except ElicitationNeeded:
@@ -2491,16 +2637,35 @@ async def _dispatch_one_tool(
             matched["arguments"] = dict(tc.arguments)
             break
     ctx["transcript"] = transcript
-    # Honour an operator's earlier decision on this exact call (resume).
+    # Honour an operator's earlier decision on this exact call (resume) -- an
+    # approval only until the call it approved has run once.
+    decisions = await live_decisions(
+        db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
+    )
+    approved_call = False
+    is_local = tc.name in _LOCAL_TOOLS
+
+    async def _approve() -> bool:
+        """An approval for THIS call, claimed before it runs (one approval,
+        one call). A local tool already ran in the shell, on the approval
+        /step claimed for its call id (`_local_allowed`) -- never on one
+        claimed here, after the fact."""
+        if is_local:
+            return (
+                body.local_result is not None
+                and decisions.claimed_call(tc.id, _call_sig(tc)) is not None
+            )
+        if decisions.get(_call_sig(tc)) != "approve":
+            return False
+        key = await claim_approval(db, run, decisions, _call_sig(tc), call_id=tc.id, ctx=ctx)
+        return key is not None
+
     if decision.effect is Effect.REQUIRE_APPROVAL:
-        decided = (
-            pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc)) or {}
-        )
-        verdict = decided.get("decision")
-        if verdict == "approve":
+        if await _approve():
+            approved_call = True
             decision = Decision(Effect.ALLOW, "operator approved")
-        elif verdict == "reject":
-            decision = Decision(Effect.DENY, rejection_text(decided))
+        elif decisions.get(_call_sig(tc)) == "reject":
+            decision = Decision(Effect.DENY, rejection_text(decisions.entry(_call_sig(tc))))
 
     tool_schema = next(
         (
@@ -2533,19 +2698,32 @@ async def _dispatch_one_tool(
         )
         tier = gate_verdict.tier
         if gate_verdict.effect == "ask":
-            decided = (
-                pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
-                or {}
-            )
-            verdict = decided.get("decision")
-            if verdict == "approve":
+            if approved_call or await _approve():
+                approved_call = True
                 decision = Decision(Effect.ALLOW, "operator approved")
-            elif verdict == "reject":
-                decision = Decision(Effect.DENY, rejection_text(decided))
+            elif decisions.get(_call_sig(tc)) == "reject":
+                decision = Decision(Effect.DENY, rejection_text(decisions.entry(_call_sig(tc))))
             else:
                 decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
         elif gate_verdict.effect == "deny":
             decision = Decision(Effect.DENY, gate_verdict.reason)
+
+    if (
+        decision.effect is Effect.REQUIRE_APPROVAL
+        and conn is not None
+        and (
+            full := await usage_full(
+                tenant_id=run.tenant_id,
+                agent_id=agent.id,
+                tool_key=conn.name,
+                tool=tc.name,
+                policy=effective_tool_policies(frame, pinned["narrowing"] or {}).get(conn.name),
+            )
+        )
+    ):
+        # Never ask a person to approve a call the usage limit would refuse
+        # once approved.
+        decision = Decision(Effect.DENY, usage_limit_reason(full))
 
     # A reading core tool runs under the frame's routine verdict on a
     # connection it does not belong to: audited as the ALLOW that applied,
@@ -2561,6 +2739,7 @@ async def _dispatch_one_tool(
         core_call=is_control_call and not is_edition_call and task is not None,
     )
     ran_despite_denial = bool(audit_terms)
+
     await append_event(
         db,
         tenant_id=run.tenant_id,
@@ -2612,6 +2791,7 @@ async def _dispatch_one_tool(
                 "tool": tc.name,
                 "arguments": tc.arguments,
                 "justification": justification,
+                "run_id": str(run.id),
                 "preview": gate_verdict.preview if gate_verdict is not None else "",
                 **({"record_url": link} if link else {}),
             },
@@ -2649,29 +2829,21 @@ async def _dispatch_one_tool(
             "reason": decision.reason,
         }
         await append_tool_call(db, run, parked_call)
+        # Decided while the tenant is still bound (the commit unbinds it, and
+        # the card's department is read under RLS), sent once it commits.
+        await publish_created(db, ar, after_commit=True)
         await db.commit()
-        await publish_run_tool_call(run.tenant_id, run_id=run.id, call=parked_call)
+        await publish_run_tool_call(
+            run.tenant_id, run_id=run.id, agent_id=run.agent_id, db=db, call=parked_call
+        )
         if closed_step_timing is not None:
             await publish_run_step_timing(
-                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+                run.tenant_id,
+                run_id=run.id,
+                agent_id=run.agent_id,
+                db=db,
+                timing=step_timing_dto(closed_step_timing),
             )
-        from oc8.realtime.bus import get_event_bus
-
-        await get_event_bus().publish_event(
-            run.tenant_id,
-            "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
-            source=f"oc8/approval/{ar.id}",
-        )
         return ToolResult(status="waiting_for_approval", output=decision.reason or "")
 
     definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
@@ -2885,13 +3057,15 @@ async def _dispatch_one_tool(
             # inline (run_id + props) -- no consumer needs to look up a row
             # that isn't committed yet, so publishing before the request's
             # terminal commit is safe here.
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                run.tenant_id,
-                "run.component_rendered",
-                {"run_id": str(run.id), **control.rendered_component},
-                source=f"oc8/run/{run.id}",
+            await publish_run_content(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=run.agent_id,
+                event={
+                    "type": "run.component_rendered",
+                    "data": {"run_id": str(run.id), **control.rendered_component},
+                    "source": f"oc8/run/{run.id}",
+                },
             )
         if control.todos is not None:
             # Whole-list replace, unlike rendered_components above -- this IS
@@ -2903,13 +3077,15 @@ async def _dispatch_one_tool(
             # already-open Live Log would show a stale or empty list until the
             # viewer navigated away and back. Same "durable copy + live event"
             # split as rendered_component above.
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                run.tenant_id,
-                "run.todos_updated",
-                {"run_id": str(run.id), "todos": control.todos},
-                source=f"oc8/run/{run.id}",
+            await publish_run_content(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=run.agent_id,
+                event={
+                    "type": "run.todos_updated",
+                    "data": {"run_id": str(run.id), "todos": control.todos},
+                    "source": f"oc8/run/{run.id}",
+                },
             )
     elif decision.effect is Effect.DENY:
         reason = decision.reason or "denied"
@@ -2971,6 +3147,9 @@ async def _dispatch_one_tool(
             focus_spec=focus_spec,
             outward_tools=outward_tools,
             skip_spec=cfg.get("outward_skip_spec") if isinstance(cfg, dict) else None,
+            # A person approved this very call: their decision, not a repeat
+            # to refuse (E2E N1).
+            approved=approved_call,
         )
     ).refusal is not None:
         # Checked before the call, not after: the point is that the recipient is
@@ -2980,6 +3159,46 @@ async def _dispatch_one_tool(
         tool_error = ToolError(
             kind="deny",
             message=outward.refusal.removeprefix("ERROR: ").strip(),
+        )
+        dispatched = False
+    elif (
+        usage_hold := await reserve_usage(
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool_key=conn.name,
+            tool=tc.name,
+            # A replay is not a new call: it gets its first result back, even
+            # at the limit, and counts nothing.
+            policy=None
+            if (
+                early_replay := await replay_for(
+                    db,
+                    tenant_id=run.tenant_id,
+                    task_id=run.task_id,
+                    tc=tc,
+                    writes=writes,
+                    idempotent=idempotent,
+                )
+            )
+            is not None
+            else effective_tool_policies(frame, pinned["narrowing"] or {}).get(conn.name),
+        )
+    ).refusal is not None:
+        # Last before the call: anything refused above never used up the
+        # agent's budget.
+        await record_limit_refusal(
+            db,
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool=tc.name,
+            arguments=tc.arguments,
+            refusal=usage_hold.refusal,
+            originating_operator=ctx.get("originating_operator"),
+        )
+        output = usage_hold.refusal
+        source = "oc8"
+        tool_error = ToolError(
+            kind="deny", message=usage_hold.refusal.removeprefix("ERROR: ").strip()
         )
         dispatched = False
     else:
@@ -2998,17 +3217,14 @@ async def _dispatch_one_tool(
         # restarted task replaying a write must get the first result rather than
         # act twice. Reads are exempt on purpose -- deduplicating a search would
         # hide the very changes the agent is meant to observe.
-        replay = await replay_for(
-            db,
-            tenant_id=run.tenant_id,
-            task_id=run.task_id,
-            tc=tc,
-            writes=writes,
-            idempotent=idempotent,
-        )
+        replay = early_replay
         if replay is not None:
+            # The first result again, not a new call (and counted nothing).
             output = replay
         else:
+            # Whether the call reached the tool: only one that never did (its
+            # environment or session could not be set up) gives its count back.
+            reached_tool = precomputed is not None
             if precomputed is not None:
                 output, tool_error, precomputed_duration_ms = precomputed
             else:
@@ -3024,6 +3240,7 @@ async def _dispatch_one_tool(
                     command, args = wrap_with_requirements(
                         cfg.get("command", ""), cfg.get("args", []), cfg
                     )
+                    reached_tool = True
                     output = await mcp_pool.call(
                         conn.id,
                         command=command,
@@ -3037,6 +3254,7 @@ async def _dispatch_one_tool(
                         http_tools=list(cfg.get("http_tools", [])),
                         login=resolve_http_login(cfg, env),
                         reusable=launch.reusable,
+                        files=RunFiles.of(run),
                     )
                 except ElicitationNeeded as exc:
                     output = exc.message
@@ -3057,6 +3275,11 @@ async def _dispatch_one_tool(
                         duration_s=(dt.datetime.now(dt.UTC) - started_at).total_seconds(),
                     )
                     output = f"ERROR: {exc}"
+                    reached_tool = reached_tool and not never_reached_the_tool(exc)
+            # A call that reached the tool counts, even if it failed: the far
+            # system may have acted first. One waiting for an answer has not
+            # happened yet and counts when it runs.
+            await usage_hold.settle(succeeded=suspend is None and reached_tool)
             # Only a successful side effect is worth recording. Recording a failure
             # would answer a legitimate retry with the old error forever.
             # A precomputed read already ran; it still has to be remembered here.
@@ -3270,10 +3493,16 @@ async def _dispatch_one_tool(
         )
     await append_tool_call(db, run, live_call)
     await db.commit()
-    await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)
+    await publish_run_tool_call(
+        run.tenant_id, run_id=run.id, agent_id=run.agent_id, db=db, call=live_call
+    )
     if closed_suspend_timing is not None:
         await publish_run_step_timing(
-            run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_suspend_timing)
+            run.tenant_id,
+            run_id=run.id,
+            agent_id=run.agent_id,
+            db=db,
+            timing=step_timing_dto(closed_suspend_timing),
         )
 
     if suspend is not None:

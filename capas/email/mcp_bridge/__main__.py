@@ -9,14 +9,16 @@ bridge does.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from urllib.parse import quote
 
 import mcp.server.stdio
 import mcp.types as types
 from mcp.server import Server, ServerRequestContext
 
 from .mailbox import MailError
-from .tools import CALL_HANDLERS, TOOLS
+from .tools import CALL_HANDLERS, TOOLS, FileContent
 
 
 async def _on_list_tools(
@@ -59,7 +61,26 @@ async def _on_call_tool(
             ],
             is_error=True,
         )
+    if isinstance(result, FileContent):
+        return types.CallToolResult(content=_file_content(result))
     return types.CallToolResult(content=[types.TextContent(type="text", text=_result_text(result))])
+
+
+def _file_content(file: FileContent) -> list[types.ContentBlock]:
+    """The details as text, the file as an embedded blob: core keeps the blob
+    as a file of the run, named by the URI's last segment (oc8's manifest
+    reference, "Files in and out of a tool")."""
+    return [
+        types.TextContent(type="text", text=_result_text(file.details)),
+        types.EmbeddedResource(
+            type="resource",
+            resource=types.BlobResourceContents(
+                uri=f"attachment:///{quote(file.name, safe='')}",
+                mime_type=file.mime_type,
+                blob=base64.b64encode(file.data).decode(),
+            ),
+        ),
+    ]
 
 
 server = Server("email", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)

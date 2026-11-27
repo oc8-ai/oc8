@@ -74,5 +74,5 @@ async def test_approve_activates_reject_soft_deletes(app_session: AppSessionFact
     async with app_session(tenant) as s:
         agent1 = await s.get(m.Agent, a1.id)
         agent2 = await s.get(m.Agent, a2.id)
-        assert agent1 is not None and agent1.status == "stopped" and agent1.deleted_at is None
+        assert agent1 is not None and agent1.status == "idle" and agent1.deleted_at is None
         assert agent2 is not None and agent2.deleted_at is not None

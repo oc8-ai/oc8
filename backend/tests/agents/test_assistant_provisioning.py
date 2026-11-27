@@ -104,7 +104,7 @@ async def test_two_concurrent_first_calls_agree_on_one_assistant(
                 await db.execute(
                     select(m.Department).where(
                         m.Department.tenant_id == tenant,
-                        m.Department.is_assistant_department.is_(True),
+                        m.Department.kind == "assistant",
                     )
                 )
             )

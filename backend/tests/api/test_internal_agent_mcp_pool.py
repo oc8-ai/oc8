@@ -283,3 +283,29 @@ async def test_first_step_lists_tools_through_the_pool(
     code, body = await _post_step(tenant, agent_id, run_id)
     assert code == 200, body
     assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_carries_its_runs_files(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/tool hands the pool the run the call belongs to, so a file the tool
+    takes resolves among the run's files and a file it returns is kept."""
+    from oc8.agent.run_files import RunFiles
+
+    seen: list[Any] = []
+
+    async def fake_call(connection_id: uuid.UUID, **kwargs: Any) -> str:
+        seen.append(kwargs.get("files"))
+        return "ok"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(db, tenant)
+
+    code, body = await _post_tool(tenant, agent_id, run_id, "search_records", {"model": "x"})
+    assert code == 200, body
+    [files] = seen
+    assert isinstance(files, RunFiles)
+    assert (files.tenant_id, files.run_id, files.agent_id) == (tenant, run_id, agent_id)

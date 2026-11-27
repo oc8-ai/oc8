@@ -16,6 +16,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -44,6 +45,7 @@ from oc8.agent.harness import GateVerdict, Harness, resolve_caps
 from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.calls import unique_call_ids
 from oc8.agent.harness.procedures import (
     newly_satisfied_lines,
     procedure_haystack,
@@ -74,12 +76,19 @@ from oc8.agent.harness.stages.b_clarify import (
 from oc8.agent.harness.stages.b_direct_access import (
     NO_DIRECT_ACCESS,
     DirectAccessView,
+    direct_limits,
     offers_direct,
 )
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import RiskTier, classify_tier
+from oc8.agent.harness.stages.b_usage_limit import (
+    record_limit_refusal,
+    reserve_usage,
+    usage_full,
+    usage_limit_reason,
+)
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
     ledger_fingerprint,
@@ -102,6 +111,7 @@ from oc8.agent.harness.step_timing import (
 from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
+from oc8.agent.mcp_pool import never_reached_the_tool
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.offering import (
     allowed_connections_for_skills,
@@ -110,11 +120,12 @@ from oc8.agent.offering import (
 )
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import Resume, build_run_preamble
+from oc8.agent.run_files import RunFiles, bind_run_files
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import DERIVE, raise_approval
+from oc8.approvals import DERIVE, publish_created, raise_approval
 from oc8.audit import append_event
 from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
@@ -122,6 +133,7 @@ from oc8.authz.pdp import (
     Decision,
     Effect,
     effective_tool_policies,
+    has_usage_limit,
     offers_tool,
     required_right,
 )
@@ -191,6 +203,7 @@ from oc8.modelrouter.types import ImagePart, ModelParams, with_prompt_cache_key
 from oc8.observability import get_tracer, record_budget_exceeded, record_tool_call
 from oc8.realtime.emit import (
     note_focus,
+    publish_run_content,
     publish_run_reasoning_delta,
     publish_run_step_timing,
     publish_run_token_delta,
@@ -208,10 +221,9 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
-from oc8.runtime.approval_resume import rejection_text
+from oc8.runtime.approval_resume import Decisions, claim_approval, drop_used, rejection_text
 from oc8.runtime.run_context import (
     append_tool_call,
-    append_waived_read_before_write,
     merge_context,
 )
 from oc8.runtime.step_record import call_state_for, step_timing_dto
@@ -286,6 +298,13 @@ def _max_steps(definition: dict[str, Any] | None) -> int:
 CancelCheck = Callable[[], Awaitable[bool]]
 # Returns operator messages addressed to a running agent since the last poll.
 InboxCheck = Callable[[], Awaitable[list[str]]]
+
+
+#: What a call whose approval another request used meanwhile is told.
+_APPROVAL_USED = (
+    "the approval for this call was used by another request meanwhile; "
+    "it did not run. Do not retry it."
+)
 
 
 @dataclass
@@ -508,6 +527,7 @@ async def _open_mcp_session(
     tenant_id: uuid.UUID,
     mcp_conn: m.McpConnection,
     run: m.AgentRun | None = None,
+    record: bool = True,
 ) -> Any:
     cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
     # With a run, the run decides whose account the bridge gets
@@ -516,7 +536,11 @@ async def _open_mcp_session(
     # every call of the run, so it is audited once, for all tools ("*").
     if run is None:
         await require_enabled(db, mcp_conn)
-    launch = await run_mcp_env(db, run=run, conn=mcp_conn, tool="*") if run is not None else None
+    launch = (
+        await run_mcp_env(db, run=run, conn=mcp_conn, tool="*", record=record)
+        if run is not None
+        else None
+    )
     env = (
         launch.env
         if launch is not None
@@ -527,6 +551,114 @@ async def _open_mcp_session(
         # departments grant no modify): the session refuses every other call.
         return ReadOnlyBridge(await _open_tool_session_for(mcp_conn, cfg, env), mcp_conn)
     return await _open_tool_session_for(mcp_conn, cfg, env)
+
+
+async def _ask_for_startup_accounts(
+    db: AsyncSession,
+    run: m.AgentRun | None,
+    missing: list[ConnectionRequired],
+    *,
+    opened_any: bool,
+) -> None:
+    """Sessions are opened at the start of a run, before the model picks a
+    tool, without asking for a missing account (E2E N3: an email-only run of
+    an agent whose department also grants Microsoft 365 said "Connect now").
+    It is asked for when the model reaches for it (`_ask_when_reached`), and
+    right away when the run has nothing else to work with -- or when the
+    login must be connected again: that one is broken, not merely unused."""
+    if run is None or not missing:
+        return
+    expired = next((exc for exc in missing if exc.reason == "needs_reauth"), None)
+    ask = expired or (None if opened_any else missing[0])
+    if ask is not None:
+        await merge_context(db, run, {"connection_required": ask.as_context()})
+
+
+async def _ask_after_idle_run(
+    db: AsyncSession,
+    run: m.AgentRun | None,
+    unavailable: Sequence[Mapping[str, Any]],
+    *,
+    status: str,
+    calls: Sequence[Mapping[str, Any]],
+    output: str,
+) -> None:
+    """A finished run that TRIED and got nowhere asks for the missing
+    account after all (review of rounds 7 and 8): every call it made failed
+    or was refused, it searched for tools, or its answer names the missing
+    connection. A plain chat turn, a run that got by on core tools, and a
+    failed or interrupted run stay quiet -- "Connect now" on a "thanks" was
+    the original complaint (E2E N3)."""
+    if run is None or status != "done" or (run.context or {}).get("connection_required"):
+        return
+    needed = [e for e in unavailable if isinstance(e.get("connection_required"), dict)]
+    if not needed:
+        return
+    # Only when nothing worked: a run that got its work done may still
+    # mention the connection it did without ("instead of Microsoft 365").
+    succeeded = any(c.get("state") == "done" for c in calls)
+    named = [] if succeeded else [e for e in needed if _names_connection(output, str(e["name"]))]
+    tried = any(c.get("tool") == FIND_TOOLS.name for c in calls) or (
+        bool(calls) and all(c.get("state") in ("failed", "denied") for c in calls)
+    )
+    pick = named[0] if named else needed[0] if tried else None
+    if pick is not None:
+        await merge_context(db, run, {"connection_required": pick["connection_required"]})
+
+
+def _names_connection(text: str, name: str) -> bool:
+    """Whether `text` names the connection as a word of its own: "Microsoft
+    365" and "microsoft365" both name `microsoft365`, "digits" does not name
+    `git`. The name's letter and digit runs may be written apart."""
+    parts = re.findall(r"[a-z]+|[0-9]+", name.lower())
+    if not parts:
+        return False
+    pattern = r"\b" + r"[\s_-]*".join(re.escape(p) for p in parts) + r"\b"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def _startup_entry(name: str, exc: BaseException) -> dict[str, Any]:
+    """One connection that offered no tools at startup, as the run keeps it:
+    with the call to action to record should the model reach for it."""
+    reason = " ".join(str(exc).split())[:200] or type(exc).__name__
+    entry: dict[str, Any] = {"name": name, "reason": reason}
+    if isinstance(exc, ConnectionRequired):
+        entry["connection_required"] = exc.as_context()
+    return entry
+
+
+def _reaches(entry: Mapping[str, Any], tc: ToolCall) -> bool:
+    """Whether this call reaches for the connection: a tool search naming
+    it, or a call addressed to it (`<connection>.<tool>`)."""
+    from oc8.agent.offering import named_by_find
+    from oc8.agent.tool_routing import SEPARATOR
+
+    name = str(entry.get("name") or "")
+    if not name:
+        return False
+    if tc.name == FIND_TOOLS.name:
+        raw = tc.arguments.get("connection")
+        connection = str(raw).strip() or None if raw is not None else None
+        return bool(named_by_find([entry], str(tc.arguments.get("query", "")), connection))
+    return tc.name.startswith(name + SEPARATOR)
+
+
+async def _ask_when_reached(
+    db: AsyncSession,
+    run: m.AgentRun | None,
+    unavailable: Sequence[Mapping[str, Any]],
+    tc: ToolCall,
+) -> None:
+    """The model reached for a connection whose account is missing: now the
+    person is asked to connect it (review of N3). Once per run -- the first
+    call to action stands."""
+    if run is None or (run.context or {}).get("connection_required"):
+        return
+    for entry in unavailable:
+        needed = entry.get("connection_required")
+        if isinstance(needed, dict) and _reaches(entry, tc):
+            await merge_context(db, run, {"connection_required": needed})
+            return
 
 
 async def _open_tool_session_for(
@@ -577,11 +709,14 @@ async def run_agent(
     delegation_depth: int = 0,
     cancel_check: CancelCheck | None = None,
     inbox_check: InboxCheck | None = None,
-    pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
+    pre_decided: Decisions | Mapping[str, str | Mapping[str, Any]] | None = None,
     originating_operator: str | None = None,
     task_images_raw: list[dict[str, str]] | None = None,
     resume: Resume | None = None,
 ) -> RunResult:
+    # Each approval covers one run of its call, claimed before it runs (`claim_approval`).
+    decided = Decisions.of(pre_decided)
+
     async def _run() -> RunResult:
         settings = get_settings()
         router = get_model_router()
@@ -725,29 +860,102 @@ async def run_agent(
         # Writes a person approved that had PASSED the read-before-write gate
         # before they were parked (the raiser marks the approval, see
         # resolve_tool_approval). A resumed leg starts with a fresh ledger, so
-        # only these are waived, once each; an approval without the mark never
-        # is -- it may have been raised before that gate ever ran.
-        async def _consume_waiver(connection: str | None, sig: str) -> bool:
-            """Use up one approval's proof, durably: the count of proofs for
-            this (connection, call) minus those already used in ANY leg of the
-            run (`waived_read_before_write`, appended atomically in the
-            dispatching transaction). False when none is left."""
-            if run_row is None:
+        # such an approval waives the gate for the one call it covers; an
+        # approval without the mark never does -- it may have been raised
+        # before that gate ever ran. Only an UNUSED approval counts: one a
+        # call already claimed (`claim_approval`) proves nothing any more.
+        def _open_proof(connection: str | None, sig: str, call_id: str) -> bool:
+            """Whether an approval this call may run on carries the proof:
+            the one already claimed for this very call, or an unused one."""
+            # The run's own record of its approvals, as it stands now: what
+            # carries the proof, and what a claim has used up.
+            unused = Decisions(run_row.context) if run_row is not None else decided
+            if unused is None:
                 return False
-            ctx = run_row.context or {}
-            key = f"{connection or 'oc8'}\n{sig}"
-            proofs = sum(
-                1
-                for e in ctx.get("resolved_tool_approvals") or []
-                if isinstance(e, dict)
-                and e.get("decision") == "approve"
-                and e.get("read_before_write_ok") is True
-                and f"{e.get('gate_connection') or 'oc8'}\n{e.get('sig')}" == key
+            mine = _claimed(call_id, sig)
+            # A decision handed in as a plain map has no approval ids; its
+            # claim then names no entry here, and the run's open ones count.
+            keys = [mine] if mine in unused.entries else unused.open.get(sig) or []
+            return any(
+                (entry := unused.entries.get(key)) is not None
+                and entry.get("read_before_write_ok") is True
+                and (entry.get("gate_connection") or "oc8") == (connection or "oc8")
+                for key in keys
             )
-            used = sum(1 for k in ctx.get("waived_read_before_write") or [] if k == key)
-            if proofs <= used:
+
+        #: tool call id -> (its signature, the approval claimed for it before
+        #: it ran). Bound to the signature: a call id is the model's, and a
+        #: different call reusing it must never ride on this claim.
+        claimed: dict[str, tuple[str, str]] = {}
+        #: Every call id the run used, so a reused one is renamed on arrival
+        #: (`unique_call_ids`): this leg's, earlier legs' recorded calls and
+        #: the calls an approval was claimed for -- as /step does. "held" is
+        #: the held re-run's own.
+        seen_call_ids: set[str] = {"held"}
+        if run_row is not None:
+            seen_call_ids.update(
+                str(c["id"])
+                for c in run_row.context.get("toolCalls") or []
+                if isinstance(c, dict) and c.get("id")
+            )
+            seen_call_ids.update(
+                str(c["call_id"])
+                for c in run_row.context.get("consumed_tool_approvals") or []
+                if isinstance(c, dict) and c.get("call_id")
+            )
+
+        def _claimed(call_id: str, sig: str) -> str | None:
+            """The approval claimed for THIS call -- same id, same signature."""
+            mine = claimed.get(call_id)
+            return mine[1] if mine is not None and mine[0] == sig else None
+
+        #: call id -> signature: an approval this call may run on, decided but
+        #: not yet claimed. The claim waits for dispatch (`_claim_at_dispatch`):
+        #: a call refused before it runs -- the usage limit, a guard -- must
+        #: not spend a person's "yes".
+        reserved: dict[str, str] = {}
+
+        async def _reserve(call_id: str, sig: str) -> bool:
+            """Whether an unused approval covers this call, set aside for it
+            (claimed only at dispatch). Counts the ones other calls of this
+            leg set aside, so one approval never covers two calls."""
+            if _claimed(call_id, sig) is not None or reserved.get(call_id) == sig:
+                return True
+            if call_id in claimed or call_id in reserved or decided is None:
                 return False
-            await append_waived_read_before_write(db, run_row, key)
+            await drop_used(db, run_row, decided, sig)
+            others = sum(1 for s in reserved.values() if s == sig)
+            if decided.available(sig) - others <= 0:
+                return False
+            reserved[call_id] = sig
+            return True
+
+        def _approved(call_id: str, sig: str) -> bool:
+            """A person's approval covers this very call (claimed or set aside)."""
+            return _claimed(call_id, sig) is not None or reserved.get(call_id) == sig
+
+        async def _claim_at_dispatch(
+            call_id: str, sig: str, ctx: dict[str, Any] | None = None
+        ) -> bool:
+            """Claim the approval set aside for this call, just before it runs;
+            True when there is none to claim. False: a racing request used it
+            -- the call must not run."""
+            if reserved.get(call_id) != sig:
+                return True
+            del reserved[call_id]
+            return await _claim(call_id, sig, ctx)
+
+        async def _claim(call_id: str, sig: str, ctx: dict[str, Any] | None = None) -> bool:
+            """Claim one unused approval of this call before it runs (once per
+            call); False when none is left -- the call is asked again."""
+            if _claimed(call_id, sig) is not None:
+                return True
+            if call_id in claimed or decided is None or not decided.approved(sig):
+                return False
+            key = await claim_approval(db, run_row, decided, sig, call_id=call_id, ctx=ctx)
+            if key is None:
+                return False
+            claimed[call_id] = (sig, key)
             return True
 
         async def _direct_right_check(
@@ -1023,7 +1231,9 @@ async def run_agent(
             if run_id is None or run_row is None:
                 return
             await append_tool_call(db, run_row, entry)
-            await publish_run_tool_call(tenant_id, run_id=run_id, call=entry)
+            await publish_run_tool_call(
+                tenant_id, run_id=run_id, agent_id=agent.id, call=entry, db=db
+            )
 
         async def _finish_step_timing(rec: dict[str, Any], tool_wait_ms: int) -> None:
             # note_tools/finish_step are dev's own capture
@@ -1039,7 +1249,13 @@ async def run_agent(
             finish_step(rec)
             if run_id is None:
                 return
-            await publish_run_step_timing(tenant_id, run_id=run_id, timing=step_timing_dto(rec))
+            await publish_run_step_timing(
+                tenant_id,
+                run_id=run_id,
+                agent_id=agent.id,
+                timing=step_timing_dto(rec),
+                db=db,
+            )
 
         async def _live_token_delta(text: str) -> None:
             # No DB write here, unlike _live_tool_call above -- the full text
@@ -1049,7 +1265,9 @@ async def run_agent(
             # fragments. Same no-run no-op as _live_tool_call.
             if run_id is None:
                 return
-            await publish_run_token_delta(tenant_id, run_id=run_id, text=text)
+            await publish_run_token_delta(
+                tenant_id, run_id=run_id, agent_id=agent.id, text=text, db=db
+            )
 
         async def _live_reasoning_delta(text: str) -> None:
             # Same no-DB-write rule as _live_token_delta: the step's reasoning
@@ -1057,10 +1275,15 @@ async def run_agent(
             if run_id is None:
                 return
             await publish_run_reasoning_delta(
-                tenant_id, run_id=run_id, step=live_step["no"], text=text
+                tenant_id,
+                run_id=run_id,
+                agent_id=agent.id,
+                step=live_step["no"],
+                text=text,
+                db=db,
             )
 
-        startup_unavailable: list[dict[str, str]] = []
+        startup_unavailable: list[dict[str, Any]] = []
 
         async def loop(tools: list[NeutralTool], server: Toolset | None) -> RunResult:
             nonlocal model_config, provider, model, model_locality, chat_mode
@@ -1361,8 +1584,8 @@ async def run_agent(
                     routed=True,
                     direct_access=direct_view,
                 )
-                held_entry = (pre_decided or {}).get(_call_sig(held)) or {}
-                verdict = held_entry.get("decision")
+                verdict = decided.get(_call_sig(held)) if decided is not None else None
+                held_entry = decided.entry(_call_sig(held)) if decided is not None else {}
                 if decision.effect is Effect.DENY:
                     return "refuse", decision.reason or "denied", decision, False
                 if verdict == "reject":
@@ -1378,21 +1601,22 @@ async def run_agent(
                     advertised=advertised,
                     direct=call_key is not None and call_key in direct_view.granted,
                 )
-                if (
+                waived = (
                     gate.effect == "deny"
                     and gate.rule == "read_before_write"
                     and verdict == "approve"
-                    and await _consume_waiver(call_key, _call_sig(held))
-                ):
-                    pass
-                elif gate.effect == "deny":
+                    and _open_proof(call_key, _call_sig(held), "held")
+                )
+                if gate.effect == "deny" and not waived:
                     return "refuse", gate.reason or "denied", decision, False
                 if gate.effect == "ask" and verdict != "approve":
                     return "park", gate.preview or "", decision, True
-                if gate.effect == "ask":
-                    # The approved write runs: its proof is spent, whether or
-                    # not read-before-write needed waiving this leg.
-                    await _consume_waiver(call_key, _call_sig(held))
+                if (
+                    decision.effect is Effect.REQUIRE_APPROVAL or gate.effect == "ask" or waived
+                ) and not await _reserve("held", _call_sig(held)):
+                    # None left -- a racing request used it -- so a person is
+                    # asked again. Claimed at dispatch, below.
+                    return "park", decision.reason or gate.preview or "", decision, True
                 return "run", "", decision, False
 
             steps = 0
@@ -1509,6 +1733,7 @@ async def run_agent(
                                     "arguments": arguments,
                                     "justification": "",
                                     "preview": why,
+                                    **({"run_id": str(run_id)} if run_id is not None else {}),
                                     **(
                                         {
                                             "read_before_write_ok": True,
@@ -1527,23 +1752,7 @@ async def run_agent(
                                 "merged": True,
                             }
                             parked.context = parked_ctx
-                            from oc8.realtime.bus import get_event_bus
-
-                            # A member-owned card was announced to its member
-                            # alone (raise_approval); never tenant-wide.
-                            if held_terms is None or "announce_to_member" not in held_terms[2]:
-                                await get_event_bus().publish_event(
-                                    held_ar.tenant_id,
-                                    "approval.created",
-                                    {
-                                        "approval_id": str(held_ar.id),
-                                        "action_type": held_ar.action_type,
-                                        "status": held_ar.status,
-                                        "title": held_ar.title,
-                                        "detail": held_ar.detail,
-                                    },
-                                    source=f"oc8/approval/{held_ar.id}",
-                                )
+                            await publish_created(db, held_ar)
                             task.state = "waiting_for_approval"
                             # Not over a pause or stop somebody made during the run: the
                             # executor no longer holds the agent row (oc8.runtime.agent_status).
@@ -1587,11 +1796,51 @@ async def run_agent(
                             else None
                         )
                         held_started_at = dt.datetime.now(dt.UTC)
+                        held_hold = (
+                            await reserve_usage(
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool_key=held_route[0],
+                                tool=held_route[6],
+                                policy=(
+                                    direct_limits(
+                                        held_view,
+                                        connection_key=held_route[0] or "",
+                                        narrowing=pinned["narrowing"] or {},
+                                    )
+                                    if held_direct
+                                    else tool_policies.get(held_route[0] or "")
+                                ),
+                            )
+                            if effect == "run" and replayed is None
+                            else None
+                        )
                         if effect == "refuse":
                             finished = f"ERROR: {why}"
                         elif replayed is not None:
                             finished = replayed
+                        elif held_hold is not None and held_hold.refusal is not None:
+                            await record_limit_refusal(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool=tool_name,
+                                arguments=arguments,
+                                refusal=held_hold.refusal,
+                                originating_operator=originating_operator,
+                            )
+                            finished = held_hold.refusal
+                        elif not await _claim_at_dispatch(
+                            "held", reserved.get("held") or "", parked_ctx
+                        ):
+                            # Claimed just before it runs, after everything
+                            # that may still refuse it; lost to a racing
+                            # request, it does not run.
+                            if held_hold is not None:
+                                await held_hold.settle(succeeded=False)
+                            finished = f"ERROR: {_APPROVAL_USED}"
                         else:
+                            held_reached = True
                             try:
                                 finished = await server.call(tool_name, arguments)
                                 await record_for(
@@ -1613,6 +1862,8 @@ async def run_agent(
                                     "skill_tool_names": pending.get("skill_tool_names") or [],
                                 }
                                 parked.context = parked_ctx
+                                if held_hold is not None:
+                                    await held_hold.settle(succeeded=False)
                                 messages.append(
                                     NeutralMessage(
                                         role="user",
@@ -1638,6 +1889,10 @@ async def run_agent(
                                 )
                             except Exception as exc:
                                 finished = f"ERROR: {exc}"
+                                held_reached = not never_reached_the_tool(exc)
+                            if held_hold is not None:
+                                # Reached the tool: counts, even if it failed.
+                                await held_hold.settle(succeeded=held_reached)
                             if held_direct and run_row is not None:
                                 # Ran through the grant: audited and counted
                                 # like the step loop's direct calls.
@@ -1683,6 +1938,7 @@ async def run_agent(
                             messages.append(
                                 NeutralMessage(role="user", content=_direct.DIRECT_ACTION_NUDGE)
                             )
+                        reserved.pop("held", None)  # claimed if it ran; free again if not
                         tool_trace.append(
                             {
                                 "tool": tool_name,
@@ -2228,6 +2484,9 @@ async def run_agent(
 
                 if not result.tool_calls:
                     result.tool_calls = _salvage_tool_calls(result.text, _offered())
+                # Before anything is booked against a call id: a reused one is
+                # renamed, here and in what the model sees.
+                unique_call_ids(result.tool_calls, seen_call_ids)
 
                 if not result.tool_calls:
                     await _finish_step_timing(step_rec, 0)
@@ -2449,10 +2708,8 @@ async def run_agent(
                         stripped, justification = strip_justification(_pre_tc.arguments)
                         _pre_tc.arguments = stripped
                         call_justifications[_pre_tc.id] = justification
-                        if pre_decision.effect is Effect.REQUIRE_APPROVAL and pre_decided:
-                            verdict = (pre_decided.get(_call_sig(_pre_tc)) or {}).get("decision")
-                            if verdict == "approve":
-                                pre_decision = Decision(Effect.ALLOW, "operator approved")
+                        # An approved call is never prefetched: its approval
+                        # is claimed before it runs, in the step loop below.
                         if pre_decision.effect is not Effect.ALLOW:
                             break
                         if (
@@ -2487,6 +2744,12 @@ async def run_agent(
                             )
                             is not None
                         ):
+                            break
+                        if has_usage_limit(
+                            tool_policies, connection_key=connection_key, tool=_pre_tc.name
+                        ):
+                            # Counted at dispatch, one call at a time: a
+                            # prefetched call would run before its count.
                             break
                         read_batch.append(_pre_tc)
                     if len(read_batch) > 1:
@@ -2654,13 +2917,19 @@ async def run_agent(
                     # decided this exact call. Honour that instead of suspending
                     # again -- approve executes it, reject turns it into a DENY
                     # the model sees and moves past.
-                    if decision.effect is Effect.REQUIRE_APPROVAL and pre_decided:
-                        decided = pre_decided.get(_call_sig(tc)) or {}
-                        decided_verdict = decided.get("decision")
-                        if decided_verdict == "approve":
+                    if decision.effect is Effect.REQUIRE_APPROVAL and decided:
+                        decided_verdict = decided.get(_call_sig(tc))
+                        if decided_verdict == "approve" and await _reserve(tc.id, _call_sig(tc)):
+                            # Set aside; claimed just before it runs: one
+                            # approval, one call.
                             decision = Decision(Effect.ALLOW, "operator approved")
                         elif decided_verdict == "reject":
-                            decision = Decision(Effect.DENY, rejection_text(decided))
+                            decision = Decision(
+                                Effect.DENY, rejection_text(decided.entry(_call_sig(tc)))
+                            )
+                    # Reaching for a connection whose account is missing asks
+                    # the person for it now (quiet until then, E2E N3).
+                    await _ask_when_reached(db, run_row, startup_unavailable, tc)
                     # A reading core tool runs under the frame's routine verdict
                     # on a connection it does not belong to (none at all on a
                     # Copilot chat): what applies to it is an ALLOW, so that is
@@ -2728,6 +2997,7 @@ async def run_agent(
                             tool_trace.append(
                                 {
                                     "tool": tc.name,
+                                    "id": tc.id,
                                     "arguments": tc.arguments,
                                     "result": output[:300],
                                     "step": steps,
@@ -2786,6 +3056,9 @@ async def run_agent(
                                 ),
                                 tool_name=tc.name,
                             )
+                            reserved.pop(
+                                tc.id, None
+                            )  # never dispatched: the approval is free again
                             continue
                         gate_verdict = None
                         if decision.effect is Effect.ALLOW:
@@ -2799,17 +3072,19 @@ async def run_agent(
                                 direct=direct_call,
                             )
                             if gate_verdict.effect == "ask":
-                                asked = (pre_decided or {}).get(_call_sig(tc)) or {}
-                                asked_verdict = asked.get("decision")
-                                if asked_verdict == "approve":
-                                    # The approved write runs: spend its proof
-                                    # (if it carries one) even though this leg
-                                    # needed no waiver, so a later leg cannot
-                                    # spend it on a second execution.
-                                    await _consume_waiver(call_key, _call_sig(tc))
+                                decided_verdict = decided.get(_call_sig(tc)) if decided else None
+                                if _approved(tc.id, _call_sig(tc)) or (
+                                    decided_verdict == "approve"
+                                    and await _reserve(tc.id, _call_sig(tc))
+                                ):
                                     decision = Decision(Effect.ALLOW, "operator approved")
-                                elif asked_verdict == "reject":
-                                    decision = Decision(Effect.DENY, rejection_text(asked))
+                                elif decided_verdict == "reject":
+                                    decision = Decision(
+                                        Effect.DENY,
+                                        rejection_text(
+                                            decided.entry(_call_sig(tc)) if decided else {}
+                                        ),
+                                    )
                                 else:
                                     decision = Decision(
                                         Effect.REQUIRE_APPROVAL, gate_verdict.preview
@@ -2817,10 +3092,13 @@ async def run_agent(
                             elif (
                                 gate_verdict.effect == "deny"
                                 and gate_verdict.rule == "read_before_write"
-                                and pre_decided
-                                and (pre_decided.get(_call_sig(tc)) or {}).get("decision")
-                                == "approve"
-                                and await _consume_waiver(call_key, _call_sig(tc))
+                                and decided
+                                and (
+                                    _approved(tc.id, _call_sig(tc))
+                                    or decided.get(_call_sig(tc)) == "approve"
+                                )
+                                and _open_proof(call_key, _call_sig(tc), tc.id)
+                                and await _reserve(tc.id, _call_sig(tc))
                             ):
                                 # A resumed leg starts with a fresh ledger, but
                                 # a held write passed this very gate (the read
@@ -2830,6 +3108,26 @@ async def run_agent(
                             elif gate_verdict.effect == "deny":
                                 decision = Decision(Effect.DENY, gate_verdict.reason)
                             tool_span.set_attribute("decision", decision.effect.value)
+                        if decision.effect is Effect.REQUIRE_APPROVAL and (
+                            full := await usage_full(
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool_key=call_key,
+                                tool=auth_tc.name,
+                                policy=(
+                                    direct_limits(
+                                        direct_view,
+                                        connection_key=call_key or "",
+                                        narrowing=pinned["narrowing"] or {},
+                                    )
+                                    if direct_call
+                                    else tool_policies.get(call_key or "")
+                                ),
+                            )
+                        ):
+                            # Never ask a person to approve a call the usage
+                            # limit would refuse once approved.
+                            decision = Decision(Effect.DENY, usage_limit_reason(full))
                         if decision.effect is Effect.REQUIRE_APPROVAL:
                             task.state = "waiting_for_approval"
                             # Not over a pause or stop somebody made during the run: the
@@ -2931,6 +3229,10 @@ async def run_agent(
                                         "tool": tc.name,
                                         "arguments": tc.arguments,
                                         "justification": justification,
+                                        # Every turn of a chat shares one task:
+                                        # only the run id says which turn's run
+                                        # the decision resumes.
+                                        **({"run_id": str(run_id)} if run_id is not None else {}),
                                         "preview": (
                                             gate_verdict.preview if gate_verdict is not None else ""
                                         ),
@@ -2978,30 +3280,11 @@ async def run_agent(
                                     ),
                                 )
 
-                            from oc8.realtime.bus import get_event_bus
-
-                            # A member-owned card was announced to its member
-                            # alone (raise_approval); never tenant-wide (R22).
-                            if hold_terms is None or "announce_to_member" not in hold_terms[2]:
-                                await get_event_bus().publish_event(
-                                    ar.tenant_id,
-                                    "approval.created",
-                                    {
-                                        "approval_id": str(ar.id),
-                                        "action_type": ar.action_type,
-                                        "status": ar.status,
-                                        # Carried in the envelope on purpose: the
-                                        # executor commits, not us, so a fresh
-                                        # session reading this row would see
-                                        # nothing (see EventBus._push_payload).
-                                        "title": ar.title,
-                                        "detail": ar.detail,
-                                    },
-                                    source=f"oc8/approval/{ar.id}",
-                                )
+                            await publish_created(db, ar)
                             tool_trace.append(
                                 {
                                     "tool": tc.name,
+                                    "id": tc.id,
                                     "arguments": tc.arguments,
                                     # `decision` stays: approval_resume.py's
                                     # sibling list uses the same word, and
@@ -3204,14 +3487,19 @@ async def run_agent(
                                 # see execute_control_tool.
                                 active_skills.append(control.activated_skill)
                             if control.rendered_component is not None and run_id is not None:
-                                from oc8.realtime.bus import get_event_bus
-
                                 rendered_components.append(control.rendered_component)
-                                await get_event_bus().publish_event(
-                                    tenant_id,
-                                    "run.component_rendered",
-                                    {"run_id": str(run_id), **control.rendered_component},
-                                    source=f"oc8/run/{run_id}",
+                                await publish_run_content(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    agent_id=agent.id,
+                                    event={
+                                        "type": "run.component_rendered",
+                                        "data": {
+                                            "run_id": str(run_id),
+                                            **control.rendered_component,
+                                        },
+                                        "source": f"oc8/run/{run_id}",
+                                    },
                                 )
                             if control.todos is not None:
                                 # Slice-assign (not `todos = control.todos`): this
@@ -3227,13 +3515,18 @@ async def run_agent(
                                     # is otherwise stuck with whatever todos existed
                                     # at its initial GET fetch, since nothing else
                                     # refetches or polls it.
-                                    from oc8.realtime.bus import get_event_bus
-
-                                    await get_event_bus().publish_event(
-                                        tenant_id,
-                                        "run.todos_updated",
-                                        {"run_id": str(run_id), "todos": control.todos},
-                                        source=f"oc8/run/{run_id}",
+                                    await publish_run_content(
+                                        db,
+                                        tenant_id=tenant_id,
+                                        agent_id=agent.id,
+                                        event={
+                                            "type": "run.todos_updated",
+                                            "data": {
+                                                "run_id": str(run_id),
+                                                "todos": control.todos,
+                                            },
+                                            "source": f"oc8/run/{run_id}",
+                                        },
                                     )
                             if (
                                 tool_error is None
@@ -3284,6 +3577,7 @@ async def run_agent(
                                 tool_trace.append(
                                     {
                                         "tool": tc.name,
+                                        "id": tc.id,
                                         "arguments": tc.arguments,
                                         "result": control.output[:300],
                                         "decision": "require_approval",
@@ -3381,6 +3675,9 @@ async def run_agent(
                                     if isinstance(call_config, dict)
                                     else None
                                 ),
+                                # A person approved this very call: their
+                                # decision, not a repeat to refuse (E2E N1).
+                                approved=_approved(tc.id, _call_sig(tc)),
                             )
                         ).refusal is not None:
                             # Before the call, not after: the point is that the
@@ -3391,6 +3688,58 @@ async def run_agent(
                             tool_error = ToolError(
                                 kind="deny",
                                 message=outward.refusal.removeprefix("ERROR: ").strip(),
+                            )
+                            _tool_call_dispatched = False
+                        elif (
+                            usage_hold := await reserve_usage(
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool_key=call_key,
+                                tool=auth_tc.name,
+                                # Through a grant, the departments' policies
+                                # decide the call, so theirs count it too. A
+                                # replay is not a new call: it gets its first
+                                # result back, even at the limit, and counts
+                                # nothing.
+                                policy=(
+                                    None
+                                    if (
+                                        early_replay := await replay_for(
+                                            db,
+                                            tenant_id=tenant_id,
+                                            task_id=task.id,
+                                            tc=tc,
+                                            writes=writes,
+                                            idempotent=idempotent,
+                                        )
+                                    )
+                                    is not None
+                                    else direct_limits(
+                                        direct_view,
+                                        connection_key=call_key or "",
+                                        narrowing=pinned["narrowing"] or {},
+                                    )
+                                    if direct_call
+                                    else tool_policies.get(call_key or "")
+                                ),
+                            )
+                        ).refusal is not None:
+                            # Last before the call: anything refused above
+                            # never used up the agent's budget.
+                            await record_limit_refusal(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool=tc.name,
+                                arguments=tc.arguments,
+                                refusal=usage_hold.refusal,
+                                originating_operator=originating_operator,
+                            )
+                            output = usage_hold.refusal
+                            source = "oc8"
+                            tool_error = ToolError(
+                                kind="deny",
+                                message=usage_hold.refusal.removeprefix("ERROR: ").strip(),
                             )
                             _tool_call_dispatched = False
                         else:
@@ -3413,17 +3762,25 @@ async def run_agent(
                                         auth_tc.name, tc.arguments, call_key, call_focus
                                     ),
                                 )
-                            replay = await replay_for(
-                                db,
-                                tenant_id=tenant_id,
-                                task_id=task.id,
-                                tc=tc,
-                                writes=writes,
-                                idempotent=idempotent,
-                            )
+                            replay = early_replay
                             if replay is not None:
+                                # The first result again, not a new call (and
+                                # counted nothing: see the reservation above).
                                 output = replay
+                            elif not await _claim_at_dispatch(tc.id, _call_sig(tc)):
+                                # The approval is claimed here, just before the
+                                # call, after everything that may still refuse
+                                # it -- a refused call keeps it. Lost to a
+                                # racing request, the call does not run.
+                                await usage_hold.settle(succeeded=False)
+                                output = f"ERROR: {_APPROVAL_USED}"
+                                source = "oc8"
+                                tool_error = ToolError(kind="deny", message=_APPROVAL_USED)
+                                _tool_call_dispatched = False
                             else:
+                                # Whether the call reached the tool: only one
+                                # that never did gives its count back.
+                                _reached_tool = True
                                 if tc.id in precomputed_outputs:
                                     (
                                         output,
@@ -3449,6 +3806,9 @@ async def run_agent(
                                                     **_skill_snapshot(),
                                                 }
                                                 parked.context = parked_ctx
+                                        # Not done yet: it runs (and counts)
+                                        # once the question is answered.
+                                        await usage_hold.settle(succeeded=False)
                                         task.state = "waiting_for_input"
                                         await _finish_step_timing(step_rec, step_tool_wait_ms)
                                         return RunResult(
@@ -3472,6 +3832,10 @@ async def run_agent(
                                             ).total_seconds(),
                                         )
                                         output = f"ERROR: {exc}"
+                                        _reached_tool = not never_reached_the_tool(exc)
+                                # A call that reached the tool counts, even if it
+                                # failed: the far system may have acted first.
+                                await usage_hold.settle(succeeded=_reached_tool)
                                 await remember_outward(
                                     db,
                                     tenant_id=tenant_id,
@@ -3641,6 +4005,7 @@ async def run_agent(
                                 model = model_config.model
                                 model_locality = model_config.locality
                         _tool_call_entry: dict[str, Any] = {
+                            "id": tc.id,
                             "tool": tc.name,
                             "arguments": tc.arguments,
                             "result": output[:300],
@@ -3670,6 +4035,10 @@ async def run_agent(
                             _tool_call_entry["reason"] = denial_record_reason or (
                                 tool_error.message if tool_error is not None else None
                             )
+                        # Not dispatched (a refusal, a replay, a deny) -> the approval it
+                        # set aside is free again for an identical call; dispatched, it
+                        # was claimed already.
+                        reserved.pop(tc.id, None)
                         tool_trace.append(_tool_call_entry)
                         if _tool_call_dispatched and (
                             decision.effect is Effect.ALLOW or ran_despite_denial
@@ -3809,15 +4178,29 @@ async def run_agent(
                     ]
                     return await loop(coding, toolset)
 
+                startup_missing: list[ConnectionRequired] = []
+
                 def _note_unavailable(conn: m.McpConnection, exc: BaseException) -> None:
-                    reason = " ".join(str(exc).split())[:200] or type(exc).__name__
-                    startup_unavailable.append({"name": conn.name, "reason": reason})
+                    entry = _startup_entry(conn.name, exc)
+                    reason = str(entry["reason"])
+                    startup_unavailable.append(entry)
                     messages.append(
                         NeutralMessage(
                             role="user",
                             content=unavailable_sentence(conn.name, reason),
                         )
                     )
+                    if isinstance(exc, ConnectionRequired):
+                        # Expected: an account this run lacks. One line, not
+                        # a traceback per run (E2E N3).
+                        startup_missing.append(exc)
+                        logger.info(
+                            "connection %s (%s) not available to this run: %s",
+                            conn.name,
+                            conn.id,
+                            reason,
+                        )
+                        return
                     logger.warning(
                         "connection %s (%s) offers no tools right now; the rest stay available",
                         conn.name,
@@ -3832,7 +4215,7 @@ async def run_agent(
                     cfg = only.config if isinstance(only.config, dict) else {}
                     try:
                         tool_session = await _open_mcp_session(
-                            db, tenant_id=tenant_id, mcp_conn=only, run=run_row
+                            db, tenant_id=tenant_id, mcp_conn=only, run=run_row, record=False
                         )
                         async with tool_session as server:
                             noted = _offerable(apply_tool_notes(server.tools, cfg), only)
@@ -3851,6 +4234,9 @@ async def run_agent(
                             return await loop(noted, server)
                     except Exception as exc:
                         _note_unavailable(only, exc)
+                        await _ask_for_startup_accounts(
+                            db, run_row, startup_missing, opened_any=False
+                        )
                         return await loop([], None)
                 async with AsyncExitStack() as stack:
                     sessions: dict[str, Any] = {}
@@ -3860,7 +4246,7 @@ async def run_agent(
                         cfg = conn.config if isinstance(conn.config, dict) else {}
                         try:
                             opened = await _open_mcp_session(
-                                db, tenant_id=tenant_id, mcp_conn=conn, run=run_row
+                                db, tenant_id=tenant_id, mcp_conn=conn, run=run_row, record=False
                             )
                             session = await stack.enter_async_context(opened)
                         except Exception as exc:
@@ -3871,6 +4257,9 @@ async def run_agent(
                             apply_tool_notes(session.tools, cfg), conn
                         )
                         auth_by_connection[conn.name] = _mcp_auth(conn)
+                    await _ask_for_startup_accounts(
+                        db, run_row, startup_missing, opened_any=bool(sessions)
+                    )
                     if not sessions:
                         return await loop([], None)
                     routed = RoutedToolset(
@@ -3879,12 +4268,24 @@ async def run_agent(
                         auth_by_connection=auth_by_connection,
                         reserved=CONTROL_TOOL_NAMES,
                     )
-                    return await loop(routed.tools, routed)
+                    ended = await loop(routed.tools, routed)
+                    await _ask_after_idle_run(
+                        db,
+                        run_row,
+                        startup_unavailable,
+                        status=ended.status,
+                        calls=ended.tool_calls,
+                        output=ended.output or "",
+                    )
+                    return ended
             finally:
                 if session_state["started"]:
                     await dispatch_claude_event(tenant_id, "SessionEnd", _hook_ctx())
 
-        result = await _run_with_session_end()
+        # Every MCP call of this run keeps its binary results as this run's
+        # files and resolves file arguments against them (agent/run_files.py).
+        with bind_run_files(RunFiles.of(run_row) if run_row is not None else None):
+            result = await _run_with_session_end()
         # The model the leg ended on: an Auto run's last concrete one.
         result.context_window_tokens = resolve_caps(
             model_config.params if model_config is not None else None

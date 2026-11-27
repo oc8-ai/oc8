@@ -26,15 +26,18 @@ async def _seed_mcp_run(
     tenant: uuid.UUID,
     *,
     parallel_tool_calls: bool = False,
+    limits: list[dict[str, Any]] | None = None,
+    approval_actions: list[str] | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """Agent + run bound to an odoo MCP connection. Returns (agent_id, run_id, conn_id)."""
     from oc8 import models as m
 
-    dept = m.Department(
-        tenant_id=tenant,
-        name="Sales",
-        frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
-    )
+    policy: dict[str, Any] = {"enabled": True, "read": True, "modify": True}
+    if limits:
+        policy["limits"] = limits
+    if approval_actions:
+        policy["approval_actions"] = approval_actions
+    dept = m.Department(tenant_id=tenant, name="Sales", frame={"tools": {"odoo": policy}})
     db.add(dept)
     await db.flush()
     model_config_id = None
@@ -242,9 +245,7 @@ async def test_single_tool_route_still_works(
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent_id, run_id, _conn_id = await _seed_mcp_run(db, tenant)
 
-    code, body = await _post_tool(
-        tenant, agent_id, run_id, "search_records", {"model": "crm.lead"}
-    )
+    code, body = await _post_tool(tenant, agent_id, run_id, "search_records", {"model": "crm.lead"})
     assert code == 200, body
     assert body["status"] == "ok"
 
@@ -269,9 +270,7 @@ async def test_parallel_reads_overlap_and_keep_call_order(
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
-        agent_id, run_id, _conn_id = await _seed_mcp_run(
-            db, tenant, parallel_tool_calls=True
-        )
+        agent_id, run_id, _conn_id = await _seed_mcp_run(db, tenant, parallel_tool_calls=True)
 
     code, body = await _post_tools(
         tenant,
@@ -307,9 +306,7 @@ async def test_parallel_reads_do_not_start_a_later_write_or_a_call_after_suspend
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
-        agent_id, run_id, _conn_id = await _seed_mcp_run(
-            db, tenant, parallel_tool_calls=True
-        )
+        agent_id, run_id, _conn_id = await _seed_mcp_run(db, tenant, parallel_tool_calls=True)
 
     code, body = await _post_tools(
         tenant,
@@ -329,9 +326,7 @@ async def test_parallel_reads_do_not_start_a_later_write_or_a_call_after_suspend
     order.clear()
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
-        agent_id, run_id, _conn_id = await _seed_mcp_run(
-            db, tenant, parallel_tool_calls=True
-        )
+        agent_id, run_id, _conn_id = await _seed_mcp_run(db, tenant, parallel_tool_calls=True)
 
     code, body = await _post_tools(
         tenant,
@@ -347,3 +342,182 @@ async def test_parallel_reads_do_not_start_a_later_write_or_a_call_after_suspend
     assert code == 200, body
     assert [r["status"] for r in body["results"]] == ["ok", "waiting_for_input"]
     assert order == ["search_records"]
+
+
+# ------------------------------------------------------------- usage limits
+
+
+@pytest.mark.asyncio
+async def test_a_call_over_a_usage_limit_is_refused_by_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called: list[str] = []
+
+    async def fake_call(connection_id: uuid.UUID, *, tool: str = "", **kwargs: Any) -> str:
+        called.append(tool)
+        return "ok"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db, tenant, limits=[{"tools": ["create_record"], "max": 1}]
+        )
+
+    first = await _post_tool(tenant, agent_id, run_id, "create_record", {"name": "A"})
+    second = await _post_tool(
+        tenant, agent_id, run_id, "create_record", {"name": "B"}, call_id="c2"
+    )
+    assert first[1]["status"] == "ok", first
+    assert "Daily limit of 1 reached for create_record" in second[1]["output"]
+    assert called == ["create_record"]
+
+
+@pytest.mark.asyncio
+async def test_a_limited_read_is_not_prefetched_by_tools(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called: list[str] = []
+
+    async def fake_call(connection_id: uuid.UUID, *, tool: str = "", **kwargs: Any) -> str:
+        called.append(tool)
+        return "ok"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db,
+            tenant,
+            parallel_tool_calls=True,
+            limits=[{"tools": ["search_records"], "max": 1}],
+        )
+
+    code, body = await _post_tools(
+        tenant,
+        agent_id,
+        run_id,
+        [
+            {"id": "c1", "name": "search_records", "arguments": {"model": "crm.lead"}},
+            {"id": "c2", "name": "search_records", "arguments": {"model": "res.partner"}},
+        ],
+    )
+    assert code == 200, body
+    assert called == ["search_records"]
+    assert "Daily limit of 1 reached for search_records" in body["results"][1]["output"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [TimeoutError("no answer in time"), "ERROR: the record is locked"],
+    ids=["timeout", "error-result"],
+)
+async def test_a_call_that_reached_the_tool_keeps_its_count_by_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch, outcome: BaseException | str
+) -> None:
+    called: list[str] = []
+
+    async def fake_call(connection_id: uuid.UUID, *, tool: str = "", **kwargs: Any) -> str:
+        called.append(tool)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db, tenant, limits=[{"tools": ["create_record"], "max": 1}]
+        )
+
+    await _post_tool(tenant, agent_id, run_id, "create_record", {"name": "A"})
+    _code, second = await _post_tool(
+        tenant, agent_id, run_id, "create_record", {"name": "B"}, call_id="c2"
+    )
+    assert called == ["create_record"]
+    assert "Daily limit of 1 reached for create_record" in second["output"]
+
+
+@pytest.mark.asyncio
+async def test_a_connection_that_could_not_be_opened_gives_the_count_back(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent.mcp_pool import McpSessionFailed, mark_not_reached
+
+    attempts: list[str] = []
+
+    async def fake_call(connection_id: uuid.UUID, *, tool: str = "", **kwargs: Any) -> str:
+        attempts.append(tool)
+        if len(attempts) == 1:
+            raise mark_not_reached(McpSessionFailed("the bridge did not start"))
+        return "ok"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db, tenant, limits=[{"tools": ["create_record"], "max": 1}]
+        )
+
+    await _post_tool(tenant, agent_id, run_id, "create_record", {"name": "A"})
+    _code, second = await _post_tool(
+        tenant, agent_id, run_id, "create_record", {"name": "B"}, call_id="c2"
+    )
+    assert attempts == ["create_record", "create_record"]
+    assert second["status"] == "ok", second
+
+
+@pytest.mark.asyncio
+async def test_an_identical_retry_at_the_limit_gets_its_first_result_back_by_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called: list[str] = []
+
+    async def fake_call(connection_id: uuid.UUID, *, tool: str = "", **kwargs: Any) -> str:
+        called.append(tool)
+        return "created 42"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db, tenant, limits=[{"tools": ["create_record"], "max": 1}]
+        )
+
+    await _post_tool(tenant, agent_id, run_id, "create_record", {"name": "A"})
+    _code, again = await _post_tool(
+        tenant, agent_id, run_id, "create_record", {"name": "A"}, call_id="c2"
+    )
+    assert called == ["create_record"]
+    assert "created 42" in again["output"]
+    assert "limit" not in again["output"].lower()
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_whose_limit_is_full_is_refused_not_parked_by_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy import select
+
+    from oc8 import models as m
+
+    async def fake_call(connection_id: uuid.UUID, **kwargs: Any) -> str:
+        return "ok"
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id, _conn_id = await _seed_mcp_run(
+            db,
+            tenant,
+            limits=[{"tools": ["create_record"], "max": 0}],
+            approval_actions=["modify"],
+        )
+
+    _code, body = await _post_tool(tenant, agent_id, run_id, "create_record", {"name": "A"})
+    assert body["status"] != "waiting_for_approval", body
+    assert "Daily limit of 0 reached for create_record" in body["output"]
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        held = (await db.execute(select(m.ApprovalRequest))).scalars().all()
+    assert held == []

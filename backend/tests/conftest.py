@@ -151,10 +151,13 @@ def _reset_realtime_bus() -> Iterator[None]:
     tests, which request `redis_url`). Production is unaffected: one process, one
     stable settings object."""
     import oc8.realtime.bus as bus_mod
+    from oc8.realtime.audience import clear_cache
 
     bus_mod._bus = None
+    clear_cache()
     yield
     bus_mod._bus = None
+    clear_cache()
 
 
 @pytest.fixture(autouse=True)

@@ -13,6 +13,7 @@ import { TriggerOwner } from "@/components/connections/trigger-owner";
 import { type AgentToolAccess, useAgentToolAccess } from "@/lib/connections";
 import {
   EVENT_TARGET_CHANGED,
+  NEEDS_CONFIRMATION,
   type TriggerDTO,
   type TriggerEventDTO,
   useCreateAgentTrigger,
@@ -276,12 +277,14 @@ export function PolledEventTriggerPanel({
   );
 }
 
-/** When polling last ran and worked, and the error that is still current. */
+/** When polling last ran and worked, the error that is still current, and
+ *  why the source last left an event out. */
 function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
   const t = useT();
   const { lang } = useLang();
   const status = trigger.pollStatus;
   const changed = !trigger.enabled && trigger.lastSkipReason === EVENT_TARGET_CHANGED;
+  const waiting = trigger.lastSkipReason === NEEDS_CONFIRMATION;
   const failing =
     !!status?.lastError &&
     !!status.lastErrorAt &&
@@ -301,6 +304,14 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
               )
             : t("Not checked yet", "Noch nicht geprüft")}
       </p>
+      {waiting && (
+        <p role="status">
+          {t(
+            "Waiting for the owner's confirmation before it listens again.",
+            "Wartet auf die Bestätigung der Person, bevor es wieder zuhört.",
+          )}
+        </p>
+      )}
       {failing && status?.lastErrorAt && (
         <p
           role="alert"
@@ -308,13 +319,20 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
         >
           {t("Error at {time}: {error}", "Fehler um {time}: {error}")
             .replace("{time}", formatWhen(status.lastErrorAt, lang))
-            .replace("{error}", status.lastError ?? "")}{" "}
+            .replace("{error}", () => status.lastError ?? "")}{" "}
           {status.lastOkAt
             ? t("Last success {time}.", "Zuletzt erfolgreich {time}.").replace(
                 "{time}",
                 formatWhen(status.lastOkAt, lang),
               )
             : t("It has not worked yet.", "Es hat noch nicht funktioniert.")}
+        </p>
+      )}
+      {status?.lastSkipped && status.lastSkippedAt && (
+        <p>
+          {t("Last skipped {time}: {reason}", "Zuletzt übersprungen {time}: {reason}")
+            .replace("{time}", formatWhen(status.lastSkippedAt, lang))
+            .replace("{reason}", () => status.lastSkipped ?? "")}
         </p>
       )}
     </div>

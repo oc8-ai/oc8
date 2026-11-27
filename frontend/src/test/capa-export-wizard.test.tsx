@@ -4,7 +4,7 @@
 // checked), the local-only skill picker (store-origin skills never render),
 // the preview step's wiring to `usePreviewCapaExport` (including
 // `warnings`/`extra_files` rendering), and the final Export step's download
-// trigger. Follows `mission-automation.test.tsx`'s full `vi.mock("@/lib/hooks"
+// trigger. Uses a full `vi.mock("@/lib/hooks"
 // ...)` + bare `QueryClientProvider` convention, and `backup-panel.test.tsx`'s
 // approach to the identical `URL.createObjectURL` + anchor-click download
 // pattern (stub the URL statics, since jsdom doesn't implement them).

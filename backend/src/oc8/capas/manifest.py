@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from oc8.authz.pdp import UsageLimit
 from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
 
 logger = logging.getLogger(__name__)
@@ -97,16 +98,55 @@ class SandboxManifest(BaseModel):
     registry_credential: str = ""
 
 
+def check_policy_limits(policies: dict[str, Any]) -> dict[str, Any]:
+    """A template's frame or narrowing is an untyped dict, so nothing else
+    reads its `limits` before a run does. Checked on install and discovery
+    (`check_manifest_limits`), never on every parse of a stored version: a
+    stored manifest must keep parsing, and the runtime closes a bad policy
+    for its own tool key (`ToolPolicy.from_json`)."""
+    tools = policies.get("tools") if isinstance(policies, dict) else None
+    if not isinstance(tools, dict):
+        return policies
+    for key, raw in tools.items():
+        if not isinstance(raw, dict) or "limits" not in raw:
+            continue
+        try:
+            parse_usage_limits(raw["limits"])
+        except ValueError as exc:
+            raise ValueError(f"tool '{key}' has a malformed usage limit: {exc}") from exc
+    return policies
+
+
 class TemplateAgentTrigger(BaseModel):
     """A cron schedule an agent template ships. The ONLY trigger kind a
-    template may declare -- a webhook trigger's token is a secret and an
-    event trigger names a source that may not exist in the target tenant,
-    so neither survives an export/install round trip (design's Non-Goals)."""
+    department template may declare -- a webhook trigger's token is a secret
+    and an event trigger names a source that may not exist in the target
+    tenant, so neither survives an export/install round trip (design's
+    Non-Goals). A personal template lifts the event half of that
+    (`TemplateAgentEventTrigger`, `TemplateAgent.triggers`): its source is a
+    connection the template itself declares."""
 
     model_config = ConfigDict(extra="forbid")
     kind: Literal["cron"] = "cron"
     cron_expression: str
     task_text: str
+
+
+class TemplateAgentEventTrigger(BaseModel):
+    """An event trigger a personal template ships. `source` names one of the
+    template's own `connections_any` / `connections_optional` entries, so it
+    always resolves in the member's tenant (A6)."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["event"]
+    source: str
+    event_type: str
+    task_text: str
+    config: dict[str, str] = {}
+
+
+#: The most triggers one template may ship.
+MAX_TEMPLATE_TRIGGERS = 10
 
 
 class TemplateAgent(BaseModel):
@@ -119,6 +159,7 @@ class TemplateAgent(BaseModel):
     skills: list[str] = []
     persona: str = ""
     narrowing: dict[str, Any] = {}
+
     # Per-agent step budget (0 = framework default). Lets an agent plugin give a
     # long, multi-record workflow more room without touching the core.
     max_steps: int = 0
@@ -144,6 +185,55 @@ class TemplateAgent(BaseModel):
     #: not a manual; each one capped at 120 characters because a starter that
     #: wraps twice is not a starter.
     prompt_starters: list[str] = Field(default_factory=list, max_length=6)
+    #: Where this template may be hired: a standard department, or a member's
+    #: personal one. A6 adds more.
+    scope: Literal["department", "personal"] = "department"
+    #: Personal templates only (A6, Ruling 6): connections of which the member
+    #: needs at least one, and connections the agent can use but does not need.
+    connections_any: list[str] = []
+    connections_optional: list[str] = []
+    #: Personal templates only: cron and event triggers, in place of the single
+    #: `trigger`. A plain union; `extra="forbid"` and `kind` tell the two apart.
+    triggers: list[TemplateAgentTrigger | TemplateAgentEventTrigger] = []
+
+    @model_validator(mode="after")
+    def _personal_connections_and_triggers(self) -> TemplateAgent:
+        declared = [
+            name
+            for name, value in (
+                ("connections_any", self.connections_any),
+                ("connections_optional", self.connections_optional),
+                ("triggers", self.triggers),
+            )
+            if value
+        ]
+        if declared and self.scope != "personal":
+            raise ValueError(
+                f"agent {self.name!r} sets {', '.join(declared)}; "
+                "only a template with scope 'personal' may"
+            )
+        if self.trigger is not None and self.triggers:
+            raise ValueError(f"agent {self.name!r} sets `trigger` or `triggers`, not both")
+        names = [*self.connections_any, *self.connections_optional]
+        if any(not n.strip() for n in names):
+            raise ValueError(f"agent {self.name!r} lists an empty connection name")
+        if len(set(names)) != len(names):
+            both = set(self.connections_any) & set(self.connections_optional)
+            if both:
+                raise ValueError(
+                    f"agent {self.name!r}: connection {sorted(both)[0]!r} is in both "
+                    "connections_any and connections_optional"
+                )
+            raise ValueError(f"agent {self.name!r} lists a connection twice")
+        if len(self.triggers) > MAX_TEMPLATE_TRIGGERS:
+            raise ValueError(f"agent {self.name!r} has more than {MAX_TEMPLATE_TRIGGERS} triggers")
+        for trig in self.triggers:
+            if isinstance(trig, TemplateAgentEventTrigger) and trig.source not in names:
+                raise ValueError(
+                    f"agent {self.name!r}: event trigger source {trig.source!r} is not "
+                    "in connections_any or connections_optional"
+                )
+        return self
 
     @field_validator("prompt_starters")
     @classmethod
@@ -160,6 +250,17 @@ class DepartmentTemplateSpec(BaseModel):
     frame: dict[str, Any] = {}
     agents: list[TemplateAgent] = []
     starter_tasks: list[dict[str, Any]] = []  # reserved; not instantiated in v1
+
+    @model_validator(mode="after")
+    def _agents_are_department_scoped(self) -> DepartmentTemplateSpec:
+        # A department template creates a standard department.
+        for agent in self.agents:
+            if agent.scope == "personal":
+                raise ValueError(
+                    f"agent {agent.name!r} has scope 'personal'; "
+                    "a department template cannot carry a personal agent"
+                )
+        return self
 
 
 class SkillTemplateSpec(BaseModel):
@@ -204,6 +305,29 @@ class FlowTemplateSpec(BaseModel):
     spec: dict[str, Any] = {}
 
 
+def parse_usage_limits(value: Any) -> list[UsageLimit]:
+    """A guardrail's `limits = [{ tools = [...], max = 50, per = "day" }]`,
+    parsed into the shape the stored policy uses (`authz.pdp.UsageLimit`)."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("limits is a list of { tools, max, per }")
+    return [lim if isinstance(lim, UsageLimit) else UsageLimit.from_json(lim) for lim in value]
+
+
+def check_limits_within_only(key: str, limits: list[UsageLimit], only: Any) -> None:
+    """A limit may only count tools the guardrail puts within reach: counting a
+    tool `only` withholds promises a budget for something never callable."""
+    if not only:
+        return
+    for limit in limits:
+        outside = sorted(set(limit.tools) - set(only))
+        if outside:
+            raise ValueError(
+                f"guardrail '{key}' limits tool(s) its `only` does not reach: {', '.join(outside)}"
+            )
+
+
 class GuardrailPreset(BaseModel):
     """A named permission set a tool-pack plugin ships for one connection.
 
@@ -232,6 +356,19 @@ class GuardrailPreset(BaseModel):
     #: connection-level preset can say "work freely, but not that" without
     #: needing per-tool policies.
     only: list[str] = []
+    #: Usage limits ("at most 50 mails a day", `authz.pdp.UsageLimit`), written
+    #: into the stored policy with the rest of the preset and counted by core.
+    limits: list[UsageLimit] = []
+
+    @field_validator("limits", mode="before")
+    @classmethod
+    def _parse_limits(cls, v: Any) -> list[UsageLimit]:
+        return parse_usage_limits(v)
+
+    @model_validator(mode="after")
+    def _limits_count_reachable_tools(self) -> GuardrailPreset:
+        check_limits_within_only(self.key, self.limits, self.only)
+        return self
 
     @field_validator("approval_eur", mode="before")
     @classmethod
@@ -587,6 +724,20 @@ class ToolPackConnection(BaseModel):
         # indistinguishable from "the pack ships no labels". The design spec
         # itself demonstrated the failure mode -- its example named
         # `search_read`, which is not one of this pack's nine tools.
+        # Same for a limit: counting a tool the connection does not have would
+        # silently count nothing.
+        if isinstance(self.scopes, dict):
+            known_tools = {
+                name for names in self.scopes.values() if isinstance(names, list) for name in names
+            }
+            for preset in self.guardrail_presets:
+                for limit in preset.limits:
+                    unknown_tools = sorted(set(limit.tools) - known_tools)
+                    if unknown_tools:
+                        raise ValueError(
+                            f"guardrail preset '{preset.key}' on connection '{self.key}' "
+                            f"limits unknown tool(s): {', '.join(unknown_tools)}"
+                        )
         if self.tool_labels and isinstance(self.scopes, dict):
             known = {name for names in self.scopes.values() for name in names}
             unknown = sorted(set(self.tool_labels) - known)
@@ -1106,6 +1257,22 @@ def http_api_login_in_base_url(manifest: Manifest) -> str | None:
         if conn.transport == "manual_http" and base_url_has_login(conn.server_url):
             return f"{conn.name}: {LOGIN_IN_BASE_URL}"
     return None
+
+
+def check_manifest_limits(manifest: Manifest) -> None:
+    """Install- and discovery-time check of the usage limits in a manifest's
+    untyped template frames and narrowings. Raises `ManifestError`."""
+    policies: list[dict[str, Any]] = []
+    if manifest.agent_template is not None:
+        policies.append(manifest.agent_template.narrowing)
+    if manifest.department_template is not None:
+        policies.append(manifest.department_template.frame)
+        policies.extend(agent.narrowing for agent in manifest.department_template.agents)
+    for policy in policies:
+        try:
+            check_policy_limits(policy)
+        except ValueError as exc:
+            raise ManifestError(str(exc)) from exc
 
 
 def parse_manifest(data: dict[str, Any]) -> Manifest:

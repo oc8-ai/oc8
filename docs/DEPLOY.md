@@ -293,6 +293,46 @@ comma-separated CIDRs and/or exact hostnames, for example
 `10.20.0.0/16,host.docker.internal`. Cloud metadata addresses
 (`169.254.169.254`, `fd00:ec2::254`) stay refused whatever is listed.
 
+### Trusting a private certificate authority
+
+Certificates are always verified. If a system on your network has a
+certificate from your organisation's own certificate authority (a mail server,
+say), oc8 can trust that CA in one of two ways:
+
+- **For one login:** some login types have a CA certificate field (the email
+  capa's mailbox does). Paste the CA's certificate (PEM) there. It is trusted
+  for that login only, besides the usual public CAs.
+- **For the whole deployment:** set `SSL_CERT_FILE` (a bundle file) or
+  `SSL_CERT_DIR` (a hashed certificate directory) on the backend, worker and
+  scheduler, and mount the file into those containers. Core uses it for its
+  own connections and passes both variables on to every tool server it
+  starts.
+
+`SSL_CERT_FILE` **replaces** the system trust store; it does not add to it.
+Point it at the system CA bundle with your CA appended, never at your CA
+alone, or every tool server stops trusting public certificates (Microsoft,
+Google, any SaaS API). For example:
+
+```bash
+cat /etc/ssl/certs/ca-certificates.crt my-ca.pem > oc8-ca-bundle.pem
+```
+
+`docker-compose.yml` does not pass `SSL_CERT_FILE` through from `.env`, so set
+it in a `docker-compose.override.yml`, for each of `backend`, `worker` and
+`scheduler`:
+
+```yaml
+services:
+  backend:
+    environment:
+      SSL_CERT_FILE: /etc/oc8/oc8-ca-bundle.pem
+    volumes:
+      - ./oc8-ca-bundle.pem:/etc/oc8/oc8-ca-bundle.pem:ro
+  # worker and scheduler: the same two entries
+```
+
+Leave the variable unset rather than empty when you do not use it.
+
 ## Letting people connect their Microsoft or Google account
 
 On the Connections page each person can connect their own Microsoft or Google

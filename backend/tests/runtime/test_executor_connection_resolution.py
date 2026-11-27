@@ -1295,3 +1295,29 @@ async def test_a_pin_does_not_pull_in_another_departments_connection(
 
         choice = await _resolve_mcp_connection(db, agent=agent, run_context={})
         assert [c.id for c in choice.connections] == [odoo.id]
+
+
+async def test_a_closed_frame_ignores_a_pinned_key_it_does_not_list(
+    app_session: AppSessionFactory,
+) -> None:
+    """A personal department's frame is closed (`authz.pdp.frame_allows_key`): a
+    narrowing key it lacks grants nothing, so it must not select a login either."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        closed = m.Department(tenant_id=tenant, name="closed", frame={"closed": True, "tools": {}})
+        opened = m.Department(tenant_id=tenant, name="open", frame={"tools": {}})
+        db.add_all([closed, opened])
+        cred, conn = _login_connection(tenant, "Odoo")
+        db.add(cred)
+        await db.flush()
+        conn.credential_id = cred.id
+        db.add(conn)
+        await db.flush()
+        narrowing = {"tools": {"Odoo": {"enabled": True, "connection_id": str(conn.id)}}}
+        stale = await _agent(db, tenant, dept_id=closed.id, narrowing=narrowing)
+        choice = await _resolve_mcp_connection(db, agent=stale, run_context={})
+        assert choice.error is None and choice.connection is None and choice.connections == ()
+
+        exclusive = await _agent(db, tenant, dept_id=opened.id, narrowing=narrowing)
+        choice = await _resolve_mcp_connection(db, agent=exclusive, run_context={})
+        assert choice.connection is not None and choice.connection.id == conn.id

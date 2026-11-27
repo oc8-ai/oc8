@@ -34,10 +34,12 @@ def _patch_sweeps(monkeypatch: pytest.MonkeyPatch, calls: list[str], *, failing:
         "close_abandoned_runs",
         "release_stale_running_agents",
         "recover_stranded_runs",
+        "wake_cancelled_parked_runs",
         "sweep_evidence",
         "sweep_knowledge_deletions",
         "prune_expired_links",
         "prune_read_notifications",
+        "prune_all_usage_counters",
     ):
         monkeypatch.setattr(housekeeping, name, fake(name))
     monkeypatch.setattr(housekeeping, "get_sandbox_driver", lambda: _Driver(calls))
@@ -53,11 +55,13 @@ async def test_tick_runs_every_sweep_in_order(monkeypatch: pytest.MonkeyPatch) -
         "close_abandoned_runs",
         "release_stale_running_agents",
         "recover_stranded_runs",
+        "wake_cancelled_parked_runs",
         "reap_orphans",
         "sweep_evidence",
         "sweep_knowledge_deletions",
         "prune_expired_links",
         "prune_read_notifications",
+        "prune_all_usage_counters",
     ]
 
 
@@ -67,10 +71,11 @@ async def test_one_failing_sweep_does_not_skip_the_rest(monkeypatch: pytest.Monk
 
     await housekeeping.run_worker_housekeeping()
 
-    assert calls[-3:] == [
+    assert calls[-4:] == [
         "sweep_knowledge_deletions",
         "prune_expired_links",
         "prune_read_notifications",
+        "prune_all_usage_counters",
     ]
 
 

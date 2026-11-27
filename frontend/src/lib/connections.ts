@@ -17,6 +17,8 @@ export interface CredentialField {
   default?: string;
   placeholder?: string;
   help?: string;
+  /** The fixed choices of a `select` field, in order. */
+  options?: string[];
   label_translations?: Record<string, string>;
   help_translations?: Record<string, string>;
   placeholder_translations?: Record<string, string>;

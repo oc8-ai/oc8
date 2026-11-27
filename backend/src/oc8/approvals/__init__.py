@@ -23,6 +23,7 @@ from oc8.approvals.service import (
     UnknownOption,
     decide_approval,
     expire_approval,
+    publish_created,
     raise_approval,
 )
 
@@ -46,6 +47,7 @@ __all__ = [
     "expire_approval",
     "load_direct_access_card",
     "member_direct_access_cards",
+    "publish_created",
     "raise_approval",
     "record_url_for_connection",
 ]

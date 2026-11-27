@@ -172,6 +172,98 @@ async def close_abandoned_runs(*, now: dt.datetime | None = None) -> list[uuid.U
     return closed
 
 
+#: How many cancelled parked runs one tick wakes, across every tenant, and for
+#: how long it tries. Each wake may wait out the wake's own lock timeout on a
+#: held row, so without a bound a few held rows would hold up every sweep
+#: after this one on the worker's timer. What is left is the next tick's.
+_CANCELLED_PARKED_PER_TICK = 20
+_CANCELLED_PARKED_BUDGET_SECONDS = 10.0
+#: Where the next tick starts in the tenant list. Each tick starts one tenant
+#: further on, so a tenant whose runs fill the cap and never wake (rows held
+#: for longer than a tick) cannot keep every other tenant's stopped runs
+#: parked. Per process; several workers each rotate on their own.
+_cancelled_parked_rotation = 0
+
+
+async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
+    """Wake every run parked on an approval that has a recorded cancel. Returns
+    the ids woken.
+
+    A stop on a parked run wakes it at once (`cancellation._wake_parked_run`),
+    but that wake gives up rather than wait on a row somebody holds: the cancel
+    row commits and the run stays parked, waiting for a decision nobody has a
+    reason to make. This is its second chance, through the SAME compare-and-set
+    -- cards first, then the run only if it is still waiting for approval -- so
+    a run an Approve resumed meanwhile is left alone. A row still held is
+    skipped and tried again on the next tick: the candidates are read without a
+    lock, and each wake runs in its own transaction under the wake's lock
+    timeout, so one held row neither blocks the sweep nor rolls back another
+    run's wake. One tick tries at most `_CANCELLED_PARKED_PER_TICK` runs and
+    stops after `_CANCELLED_PARKED_BUDGET_SECONDS`; the rest wait a tick, and
+    the next tick starts at the next tenant.
+
+    Never raises: it runs on the worker's own timer.
+    """
+    # Deferred: the cancellation module reaches the run queue and the
+    # approvals service, which reach the engine.
+    from oc8.runtime.cancellation import _wake_parked_run
+
+    global _cancelled_parked_rotation
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _CANCELLED_PARKED_BUDGET_SECONDS
+    attempts = 0
+    woken: list[uuid.UUID] = []
+    tenant_ids = list(await list_active_tenant_ids())
+    if tenant_ids:
+        start = _cancelled_parked_rotation % len(tenant_ids)
+        tenant_ids = tenant_ids[start:] + tenant_ids[:start]
+        _cancelled_parked_rotation += 1
+    for tenant_id in tenant_ids:
+        if attempts >= _CANCELLED_PARKED_PER_TICK or loop.time() >= deadline:
+            break
+        try:
+            async with tenant_session(tenant_id) as db:
+                candidates = (
+                    (
+                        await db.execute(
+                            select(m.AgentRun.id)
+                            .join(m.RunCancellation, m.RunCancellation.run_id == m.AgentRun.id)
+                            .where(m.AgentRun.state == RunState.WAITING_FOR_APPROVAL.value)
+                            .order_by(m.AgentRun.updated_at)
+                            .limit(_CANCELLED_PARKED_PER_TICK - attempts)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+        except Exception:
+            logger.exception("cancelled-parked sweep failed for tenant %s", tenant_id)
+            continue
+        for run_id in candidates:
+            if attempts >= _CANCELLED_PARKED_PER_TICK or loop.time() >= deadline:
+                break
+            attempts += 1
+            try:
+                async with tenant_session(tenant_id) as db:
+                    run = await db.get(m.AgentRun, run_id)
+                    if run is None:
+                        continue
+                    await _wake_parked_run(db, run)
+                    moved = run.state == RunState.QUEUED.value
+            except Exception:
+                logger.exception("cancelled parked run %s could not be woken", run_id)
+                continue
+            if moved:
+                logger.warning(
+                    "woke cancelled parked run %s (tenant %s): its stop had not "
+                    "reached it; it ends on its next start",
+                    run_id,
+                    tenant_id,
+                )
+                woken.append(run_id)
+    return woken
+
+
 #: Agent statuses whose queued runs the worker REFUSES to start: only the hire
 #: gate (`execute_run` fails a run of an agent that has not been hired). A
 #: lost publish for such a run is left queued until the hold ends, when it
@@ -423,6 +515,7 @@ __all__ = [
     "heartbeat",
     "recover_stranded_runs",
     "release_stale_running_agents",
+    "wake_cancelled_parked_runs",
 ]
 
 

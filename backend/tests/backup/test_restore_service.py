@@ -207,6 +207,35 @@ async def test_round_trip_restores_the_pre_mutation_state(
     assert {row.id for row in after} == {row.id for row in before}
 
 
+async def test_restore_keeps_empty_json_columns_as_sql_null(
+    db_session: AsyncSession, acme_tenant: uuid.UUID, actor: uuid.UUID
+) -> None:
+    """An unset JSONB column (held frame, confirmed skills) must come back as
+    SQL NULL, never the JSON literal `null` -- the held-frame CHECK relies on it."""
+    _, backup = await export_archive(db_session, tenant_id=acme_tenant, passphrase=None)
+    await db_session.execute(delete(m.Agent).where(m.Agent.tenant_id == acme_tenant))
+    await restore_from_archive(
+        db_session,
+        tenant_id=acme_tenant,
+        archive_bytes=backup,
+        passphrase=None,
+        actor_type="human",
+        actor_id=actor,
+    )
+    for table, column in (
+        ("department", "pending_frame_tools"),
+        ("agent", "confirmed_skills"),
+        ("agent_tool_access", "binding_split"),
+        ("trigger", "access_split"),
+    ):
+        wrong = (
+            await db_session.execute(
+                text(f"SELECT count(*) FROM {table} WHERE {column} = 'null'::jsonb")
+            )
+        ).scalar_one()
+        assert wrong == 0, f"{table}.{column} holds the JSON literal null"
+
+
 async def test_cross_tenant_restore_rewrites_tenant_id_and_leaves_source_untouched(
     app_session: AppSessionFactory,
     other_instance: AppSessionFactory,

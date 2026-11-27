@@ -12,7 +12,8 @@ happens.
 Three rules hold across all of them:
 
 * **Idempotent.** Re-enabling (after a permission change, say) must not create a
-  second copy.
+  second copy. An enable after an upgrade brings a shipped skill's content up
+  to date -- unless an admin customised it (`oc8.skills.shipped`).
 * **Per tenant.** Rows are written for the enabling tenant only.
 * **Non-destructive.** Disabling a plugin does NOT delete what it created.
   Toggling a plugin off must not silently destroy work built on top of it;
@@ -25,8 +26,6 @@ plugin because one guardrail string was wrong helps nobody.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import uuid
 from typing import Any
@@ -38,14 +37,9 @@ from oc8 import models as m
 from oc8.capas.manifest import Manifest, SkillTemplateSpec, ToolPackConnection
 from oc8.connections.tool_connection import without_reserved
 from oc8.skills.schema import SkillDefinitionError, parse_definition
+from oc8.skills.shipped import artifact_hash, record_shipped, sync_shipped_skill
 
 logger = logging.getLogger(__name__)
-
-
-def _hash(payload: dict[str, Any]) -> bytes:
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).digest()
 
 
 def _slugify(value: str) -> str:
@@ -76,14 +70,6 @@ async def _materialise_one_skill(
     manifest: Manifest,
     spec: SkillTemplateSpec,
 ) -> None:
-    existing = (
-        await db.execute(
-            select(m.Skill).where(m.Skill.tenant_id == tenant_id, m.Skill.name == spec.name)
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        return
-
     definition: dict[str, Any] = {
         "schema_version": 1,
         "slug": _slugify(spec.name),
@@ -113,6 +99,26 @@ async def _materialise_one_skill(
         logger.warning("plugin %s ships an unusable skill, skipped: %s", manifest.name, exc)
         return
 
+    existing = (
+        await db.execute(
+            select(m.Skill).where(m.Skill.tenant_id == tenant_id, m.Skill.name == spec.name)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        # Only this plugin's own skill follows its updates -- one an admin
+        # authored under the same name was never shipped. A customised one
+        # keeps the admin's edit (oc8.skills.shipped).
+        if existing.origin == "store" and existing.author == manifest.name:
+            await sync_shipped_skill(
+                db,
+                existing,
+                definition=definition,
+                semver=manifest.version,
+                description=spec.description,
+                category=spec.category or None,
+            )
+        return
+
     skill = m.Skill(
         tenant_id=tenant_id,
         name=spec.name,
@@ -129,11 +135,12 @@ async def _materialise_one_skill(
         skill_id=skill.id,
         semver=manifest.version,
         definition=definition,
-        artifact_hash=_hash(definition),
+        artifact_hash=artifact_hash(definition),
     )
     db.add(version)
     await db.flush()
     skill.current_version_id = version.id
+    record_shipped(skill, version.id)
     await db.flush()
 
 
@@ -157,7 +164,7 @@ async def _materialise_flow(db: AsyncSession, *, tenant_id: uuid.UUID, manifest:
         flow_id=flow.id,
         semver=manifest.version,
         spec=dict(spec.spec),
-        artifact_hash=_hash(spec.spec),
+        artifact_hash=artifact_hash(spec.spec),
     )
     db.add(version)
     await db.flush()

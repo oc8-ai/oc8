@@ -366,7 +366,7 @@ def test_guardrail_only_lists_reference_real_tool_names() -> None:
 
 
 def test_the_capa_is_at_version_one_two() -> None:
-    assert _manifest().version == "1.2.0"
+    assert _manifest().version == "1.3.0"
 
 
 def test_it_declares_mail_received_as_a_polled_event_on_the_default_mailbox() -> None:

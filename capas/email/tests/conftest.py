@@ -519,7 +519,7 @@ def trust_test_certificates(
     for the STARTTLS front, GreenMail's own self-signed certificate (chain
     checked, no host name in it to check) for its implicit-TLS ports."""
 
-    def context(host: str) -> ssl.SSLContext:
+    def context(host: str, ca_certificate: str = "") -> ssl.SSLContext:
         if host == FRONT_HOST:
             return ssl.create_default_context(cadata=greenmail_server.ca_pem)
         ctx = ssl.create_default_context(cadata=greenmail_server.greenmail_pem)

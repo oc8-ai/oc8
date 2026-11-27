@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { NotificationSettings } from "@/components/notification-settings";
 import { ApiKeysPanel } from "@/components/api-keys-panel";
+import { PersonalAssistantsPanel } from "@/components/personal-assistants-panel";
 import {
   AccountManagementLink,
   OrganisationIdLine,
@@ -432,6 +433,7 @@ export function ProfilePage() {
       </Panel>
       <TwoFactorPanel />
       <ApiKeysPanel />
+      <PersonalAssistantsPanel />
       <ApprovalChannelsPanel />
       <ToolAllowRulesPanel />
       <EditionProfileSections />

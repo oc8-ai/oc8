@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,6 +20,8 @@ export interface ConfirmOptions {
   // Every current caller confirms an irreversible delete/remove, so this
   // defaults to true rather than making every call site repeat it.
   destructive?: boolean;
+  /** Extra content under the description, e.g. an opt-in checkbox. */
+  body?: ReactNode;
 }
 
 // Replaces window.confirm() with an oc8-styled AlertDialog while keeping each
@@ -50,6 +52,7 @@ export function useConfirm() {
           <AlertDialogTitle>{options?.title}</AlertDialogTitle>
           <AlertDialogDescription>{options?.description}</AlertDialogDescription>
         </AlertDialogHeader>
+        {options?.body}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => settle(false)}>
             {options?.cancelLabel}

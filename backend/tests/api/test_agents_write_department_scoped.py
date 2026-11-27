@@ -233,8 +233,18 @@ def _skills(office: _Office, department: str) -> tuple[str, str, dict[str, Any]]
     )
 
 
-#: The six routes decision 1 names, each with the request that makes it succeed
-#: and the status/text the route already gives a genuinely missing resource.
+def _autonomy(office: _Office, department: str) -> tuple[str, str, dict[str, Any]]:
+    # E2E F2: how far an agent acts unasked is an agent write like the rest.
+    return (
+        "PUT",
+        f"/api/v1/agents/{_agent_id(office, department)}/autonomy",
+        {"autonomy": "autonomous", "grants": ["outward"]},
+    )
+
+
+#: The six routes decision 1 names (and the autonomy switch since), each with
+#: the request that makes it succeed and the status/text the route already
+#: gives a genuinely missing resource.
 _MUTATIONS: dict[str, dict[str, Any]] = {
     "create_agent": {
         "request": _create_agent,
@@ -263,6 +273,11 @@ _MUTATIONS: dict[str, dict[str, Any]] = {
     },
     "skills": {
         "request": _skills,
+        "not_found_status": 404,
+        "not_found_text": "agent not found",
+    },
+    "autonomy": {
+        "request": _autonomy,
         "not_found_status": 404,
         "not_found_text": "agent not found",
     },

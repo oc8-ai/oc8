@@ -32,8 +32,12 @@ from __future__ import annotations
 #: outcomes of a call that ran; `denied` is a call refused before dispatch
 #: (a guardrail DENY, a blocking plugin hook, no tool server, an
 #: already-delivered outward refusal); `awaiting_approval` is a call parked
-#: for a human and not yet run at all.
-CALL_STATES: frozenset[str] = frozenset({"done", "failed", "denied", "awaiting_approval"})
+#: for a human and not yet run at all; `approved` is a held call a person
+#: approved that the resumed run did not carry out (executor.py
+#: `_merge_leg_calls`).
+CALL_STATES: frozenset[str] = frozenset(
+    {"done", "failed", "denied", "awaiting_approval", "approved"}
+)
 
 #: Keys EVERY `toolCalls` entry carries, in both runtimes. The parity test
 #: asserts this set against entries produced by each runtime; timing keys

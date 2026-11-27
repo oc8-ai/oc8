@@ -52,16 +52,25 @@ from oc8.agent.control_tools import (
     has_readable_context,
 )
 from oc8.agent.engine import _authorize, _call_sig
+from oc8.agent.harness.stages.b_usage_limit import (
+    record_limit_refusal,
+    reserve_usage,
+    usage_full,
+    usage_limit_reason,
+)
 from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import resolve_auth_header
+from oc8.agent.mcp_pool import never_reached_the_tool
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
-    REFUSAL,
     already_delivered,
+    is_unparsable,
     outward_target,
+    refusal_for,
     remember_delivery,
 )
 from oc8.agent.provenance import fence, shorten_long_strings
+from oc8.agent.run_files import RunFiles
 from oc8.agent.tool_idempotency import (
     record_invocation,
     replayed_result,
@@ -77,7 +86,7 @@ from oc8.agent.tool_semantics import (
 )
 from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
-from oc8.approvals import raise_approval
+from oc8.approvals import publish_created, raise_approval
 from oc8.audit import append_event
 from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
@@ -104,11 +113,11 @@ from oc8.copilot.door import chat_door
 from oc8.edition.tools import EditionOffer, edition_offer
 from oc8.memory.policy import authorize_memory_write
 from oc8.modelrouter import ToolCall
-from oc8.realtime.emit import note_focus, record_activity
+from oc8.realtime.emit import note_focus, publish_run_content, record_activity
 from oc8.records.approvals import note_approved_result
 from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import pre_decided_map, rejection_text
+from oc8.runtime.approval_resume import claim_approval, live_decisions, rejection_text
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.run_context import merge_context
 from oc8.skills.runtime import (
@@ -666,23 +675,7 @@ async def _stop_for_blast_radius(
     )
     await db.commit()
     await _rebind_tenant(db, run.tenant_id)
-    from oc8.realtime.bus import get_event_bus
-
-    await get_event_bus().publish_event(
-        run.tenant_id,
-        "approval.created",
-        {
-            "approval_id": str(ar.id),
-            "action_type": ar.action_type,
-            "status": ar.status,
-            # title/detail travel in the envelope so the push hook never has to
-            # re-read this row from a fresh, uncommitted-blind session (see
-            # EventBus._push_payload).
-            "title": ar.title,
-            "detail": ar.detail,
-        },
-        source=f"oc8/approval/{ar.id}",
-    )
+    await publish_created(db, ar)
     return _tool_result(blast_refusal(touched, limit), is_error=True)
 
 
@@ -1018,13 +1011,15 @@ async def _call_tool(
             # inline (run_id + props) -- no consumer needs to look up a row
             # that isn't committed yet, so publishing before the request's
             # terminal commit is safe here.
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                run.tenant_id,
-                "run.component_rendered",
-                {"run_id": str(run.id), **outcome.rendered_component},
-                source=f"oc8/run/{run.id}",
+            await publish_run_content(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=run.agent_id,
+                event={
+                    "type": "run.component_rendered",
+                    "data": {"run_id": str(run.id), **outcome.rendered_component},
+                    "source": f"oc8/run/{run.id}",
+                },
             )
         return _tool_result(outcome.output, is_error=outcome.output.startswith("ERROR"))
 
@@ -1107,16 +1102,39 @@ async def _call_tool(
         edition_offer=edition,
         routed=routed,
     )
-    # Honour an operator's earlier decision on this exact call (resume).
+    # Honour an operator's earlier decision on this exact call (resume) -- an
+    # approval only until the call it approved has run once.
+    decisions = await live_decisions(
+        db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
+    )
+    approved_call = False
+    #: What the call would need were its approval gone by dispatch: claimed
+    #: only then (see `_claim_or_ask` below), so a call refused before it
+    #: runs never spends a person's "yes".
+    held_decision = decision
     if decision.effect is Effect.REQUIRE_APPROVAL:
-        decided = (
-            pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc)) or {}
-        )
-        verdict = decided.get("decision")
-        if verdict == "approve":
+        verdict = decisions.get(_call_sig(tc))
+        if verdict == "approve" and decisions.available(_call_sig(tc)):
+            approved_call = True
             decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
-            decision = Decision(Effect.DENY, rejection_text(decided))
+            decision = Decision(Effect.DENY, rejection_text(decisions.entry(_call_sig(tc))))
+    if (
+        decision.effect is Effect.REQUIRE_APPROVAL
+        and conn is not None
+        and (
+            full := await usage_full(
+                tenant_id=run.tenant_id,
+                agent_id=agent.id,
+                tool_key=conn.name,
+                tool=tc.name,
+                policy=effective_tool_policies(frame, narrowing).get(conn.name),
+            )
+        )
+    ):
+        # Never ask a person to approve a call the usage limit would refuse
+        # once approved.
+        decision = Decision(Effect.DENY, usage_limit_reason(full))
 
     await append_event(
         db,
@@ -1131,7 +1149,8 @@ async def _call_tool(
         originating_operator=run.context.get("originating_operator"),
     )
 
-    if decision.effect is Effect.REQUIRE_APPROVAL:
+    async def _ask(decision: Decision) -> dict[str, Any]:
+        """Park the run on a new approval for this call."""
         # Which record this call is about, resolved from the SAME pure helper
         # the blast-radius and claim machinery below already uses -- so the
         # link on the approval and the record the run is reaching for can
@@ -1148,7 +1167,7 @@ async def _call_tool(
             action_type="tool_send",
             title=f"{agent.name} wants to call {tc.name}",
             detail=decision.reason,
-            payload={"tool": tc.name, "arguments": tc.arguments},
+            payload={"tool": tc.name, "arguments": tc.arguments, "run_id": str(run.id)},
             reason_code=decision.reason_code,
             reason_context=decision.context,
             record_url=(
@@ -1182,29 +1201,16 @@ async def _call_tool(
         )
         await db.commit()
         await _rebind_tenant(db, run.tenant_id)
-        from oc8.realtime.bus import get_event_bus
-
-        await get_event_bus().publish_event(
-            run.tenant_id,
-            "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
-            source=f"oc8/approval/{ar.id}",
-        )
+        await publish_created(db, ar)
         return _tool_result(
             f"This action needs human approval ({decision.reason or 'threshold reached'}). "
             "The run is parked; it continues once an operator decides. "
             "Do not retry and do not work around it.",
             is_error=True,
         )
+
+    if decision.effect is Effect.REQUIRE_APPROVAL:
+        return await _ask(decision)
 
     if decision.effect is Effect.DENY:
         denied = tool_denied(decision, frame=frame, agent=agent, conn=conn)
@@ -1321,9 +1327,40 @@ async def _call_tool(
         outward_tools,
         skip_spec=cfg.get("outward_skip_spec"),
     )
-    if target is not None and run.task_id is not None:
-        if await already_delivered(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target):
-            return _tool_result(REFUSAL.format(target=target), is_error=True)
+    # A call a person approved through its card is the person's decision: the
+    # guard stops unattended repeats, never a human's "yes" (E2E N1).
+    if target is not None and not approved_call:
+        if is_unparsable(target) or (
+            run.task_id is not None
+            and await already_delivered(
+                db, tenant_id=run.tenant_id, task_id=run.task_id, target=target
+            )
+        ):
+            return _tool_result(refusal_for(target), is_error=True)
+
+    # Usage limits, last before the call: anything refused above never used up
+    # the agent's budget. Settled below -- given back only for a call that
+    # never reached the tool.
+    usage_hold = await reserve_usage(
+        tenant_id=run.tenant_id,
+        agent_id=agent.id,
+        tool_key=conn.name,
+        tool=tc.name,
+        policy=effective_tool_policies(frame, narrowing).get(conn.name),
+    )
+    if usage_hold.refusal is not None:
+        await record_limit_refusal(
+            db,
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool=tc.name,
+            arguments=tc.arguments,
+            refusal=usage_hold.refusal,
+            originating_operator=run.context.get("originating_operator"),
+        )
+        await db.commit()
+        await _rebind_tenant(db, run.tenant_id)
+        return _tool_result(usage_hold.refusal, is_error=True)
 
     focus = describe_focus(tc.name, tc.arguments, focus_spec)
     names_record = describes_a_record(tc.name, tc.arguments, focus_spec)
@@ -1341,12 +1378,26 @@ async def _call_tool(
         await _audit_result(
             db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
         )
+        await usage_hold.settle(succeeded=False)
         return _tool_result(str(exc), is_error=True)
     except Exception as exc:  # surface to the model, not as a broken server
         await _audit_result(
             db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
         )
+        await usage_hold.settle(succeeded=False)
         return _tool_result(f"ERROR: {exc}", is_error=True)
+    # The approval is claimed here, just before dispatch -- after every check
+    # that may still refuse the call (usage, the account, the guards above), so
+    # a refused call keeps it -- and committed at once: of two identical
+    # requests racing on one approval exactly one wins it; the other is asked
+    # again. Kept when the call then fails -- the far system may have acted
+    # first (`claim_approval`).
+    if approved_call:
+        if await claim_approval(db, run, decisions, _call_sig(tc)) is None:
+            await usage_hold.settle(succeeded=False)
+            return await _ask(held_decision)
+        await db.commit()
+        await _rebind_tenant(db, run.tenant_id)
     link_ctx = link_context(conn, env)
     record_url = (
         link_for(link_ctx, entity=ident[0], ref=ident[1], args=tc.arguments)
@@ -1383,12 +1434,19 @@ async def _call_tool(
             http_tools=list(cfg.get("http_tools", [])),
             login=resolve_http_login(cfg, env),
             reusable=launch.reusable,
+            files=RunFiles.of(run),
         )
     except Exception as exc:  # surface to the model, not as a broken server
         await _audit_result(
             db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
         )
+        # A call that reached the tool counts, even if it failed or timed out:
+        # the far system may have acted first. Only a session that never
+        # opened gives the count back.
+        await usage_hold.settle(succeeded=not never_reached_the_tool(exc))
         return _tool_result(f"ERROR: {exc}", is_error=True)
+    # Reached the tool: counts, even if the tool reported an error.
+    await usage_hold.settle(succeeded=True)
     duration_ms = int((time.monotonic() - started) * 1000)
     answered_ok = not output.startswith("ERROR:")
 

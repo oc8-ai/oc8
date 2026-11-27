@@ -7,14 +7,16 @@ sandboxing by trust level, and dynamic entry-point loading are out of scope
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.engine import CancelCheck, InboxCheck, RunResult, run_agent
 from oc8.agent.preamble import Resume
+
+if TYPE_CHECKING:
+    from oc8.runtime.approval_resume import Decisions
 
 
 class RuntimeAdapter(Protocol):
@@ -31,7 +33,7 @@ class RuntimeAdapter(Protocol):
         delegation_depth: int = 0,
         cancel_check: CancelCheck | None = None,
         inbox_check: InboxCheck | None = None,
-        pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
+        pre_decided: Decisions | None = None,
         originating_operator: str | None = None,
         task_images_raw: list[dict[str, str]] | None = None,
     ) -> RunResult: ...
@@ -85,7 +87,7 @@ class Oc8AgentRuntime:
         delegation_depth: int = 0,
         cancel_check: CancelCheck | None = None,
         inbox_check: InboxCheck | None = None,
-        pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
+        pre_decided: Decisions | None = None,
         originating_operator: str | None = None,
         task_images_raw: list[dict[str, str]] | None = None,
         resume: Resume | None = None,
@@ -138,7 +140,7 @@ class EchoRuntimeStub:
         delegation_depth: int = 0,
         cancel_check: CancelCheck | None = None,
         inbox_check: InboxCheck | None = None,
-        pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
+        pre_decided: Decisions | None = None,
         originating_operator: str | None = None,
         task_images_raw: list[dict[str, str]] | None = None,
     ) -> RunResult:

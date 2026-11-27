@@ -1935,3 +1935,209 @@ async def test_a_resumed_legs_reply_digest_covers_every_legs_calls(
         ).scalar_one()
         assert reply.work_digest is not None
         assert "crm_search" in reply.work_digest and "crm_update" in reply.work_digest
+
+
+async def test_a_resumed_leg_keeps_the_calls_of_the_leg_before_the_approval(
+    app_session: AppSessionFactory,
+) -> None:
+    """E2E F10: after an approval the run record listed only the resumed leg's
+    call -- the reads that led up to the held write were gone from the audit
+    trail. The held call itself is settled by its decision: an approved one is
+    the call the resumed leg runs, a rejected one stays, as refused."""
+    from oc8.runtime.approval_resume import call_signature
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+    read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    refused = {"tool": "mail_delete", "arguments": {"uid": 1}, "state": "awaiting_approval"}
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **(run.context or {}),
+            "toolCalls": [read, held, refused],
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_signature("mail_reply", {"uid": 1}),
+                    "tool": "mail_reply",
+                    "arguments": {"uid": 1},
+                    "decision": "approve",
+                },
+                {
+                    "sig": call_signature("mail_delete", {"uid": 1}),
+                    "tool": "mail_delete",
+                    "arguments": {"uid": 1},
+                    "decision": "reject",
+                },
+            ],
+        }
+    replayed = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "done", "step": 1}
+
+    async def fake_runner(db: Any, **kw: Any) -> RunResult:
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="replied",
+            tool_calls=[replayed],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(fake_runner),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        calls = run.context["toolCalls"]
+    # The resumed leg's step 1 follows the earlier leg's last step.
+    assert calls == [read, {**refused, "state": "denied"}, {**replayed, "step": 2}]
+
+
+async def test_merging_legs_keeps_an_unreplayed_approval_numbers_steps_on_and_drops_repeats() -> (
+    None
+):
+    """Review of F10. An approved call the resumed leg did not carry out
+    stays, marked approved; a call recorded again by a redelivered leg is
+    listed once; the resumed leg's steps continue after the earlier ones."""
+    from oc8.runtime.approval_resume import call_signature
+    from oc8.runtime.executor import _merge_leg_calls
+
+    read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    partial = {"tool": "mail_list", "arguments": {}, "state": "done", "step": 1, "startedAt": "x"}
+    # The redelivered leg runs the same call again, at another time.
+    again = {**partial, "startedAt": "y", "durationMs": 12}
+    decided = {call_signature("mail_reply", {"uid": 1}): "approve"}
+    leg = [again, {"tool": "mail_send", "arguments": {"to": "a"}, "state": "done", "step": 2}]
+
+    # `partial` was stored by an unfinished attempt of THIS leg, which began
+    # with two entries stored (the executor's `legCallsFrom` marker).
+    merged = _merge_leg_calls([read, held, partial], decided, leg, leg_from=2)
+
+    assert merged == [
+        read,
+        {**held, "state": "approved"},
+        {**again, "step": 3},
+        {"tool": "mail_send", "arguments": {"to": "a"}, "state": "done", "step": 4},
+    ]
+
+
+def test_merging_legs_keeps_an_earlier_legs_identical_call() -> None:
+    """An earlier leg's read and this leg's same read at the same step number
+    are two calls, not one recorded twice: only this leg's own partial calls,
+    at the end of the stored list, are repeats."""
+    from oc8.runtime.approval_resume import call_signature
+    from oc8.runtime.executor import _merge_leg_calls
+
+    first = {"tool": "mail_list", "arguments": {}, "state": "done", "step": 1, "startedAt": "x"}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    decided = {call_signature("mail_reply", {"uid": 1}): "approve"}
+    reread = {**first, "startedAt": "y"}
+    replied = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "done", "step": 2}
+
+    merged = _merge_leg_calls([first, held], decided, [reread, replied])
+
+    assert merged == [first, {**reread, "step": 2}, {**replied, "step": 3}]
+
+
+def test_merging_legs_keeps_a_read_repeated_after_a_clarification() -> None:
+    """Re-review of F10: the earlier leg ended on its read at step 1 (then
+    asked a question), and the resumed leg reads again at its own step 1. Two
+    reads, both shown: without a marker of this leg's own stored calls, a
+    matching tail is an earlier leg's work, never a repeat."""
+    from oc8.runtime.executor import _merge_leg_calls
+
+    read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
+    first = {**read, "startedAt": "x"}
+    again = {**read, "startedAt": "y"}
+
+    merged = _merge_leg_calls([first], {}, [again], leg_from=None)
+
+    assert merged == [first, {**again, "step": 2}]
+
+
+def test_merging_legs_keeps_two_identical_calls_of_one_leg() -> None:
+    """The same call made twice in a leg is listed twice, also when a
+    redelivery recorded only the first of them before."""
+    from oc8.runtime.executor import _merge_leg_calls
+
+    read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    rejected = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "denied", "step": 2}
+    poll = {"tool": "mail_list", "arguments": {}, "state": "done", "step": 1, "startedAt": "x"}
+    leg = [
+        {**poll, "startedAt": "y"},
+        {**poll, "step": 2, "startedAt": "z"},
+    ]
+    from oc8.runtime.approval_resume import call_signature
+
+    decided = {call_signature("mail_reply", {"uid": 1}): "reject"}
+
+    merged = _merge_leg_calls([read, held, poll], decided, leg, leg_from=2)
+
+    assert merged == [
+        read,
+        rejected,
+        {**poll, "startedAt": "y", "step": 3},
+        {**poll, "step": 4, "startedAt": "z"},
+    ]
+
+
+async def test_a_resumed_leg_drops_only_its_dead_attempts_repeats_and_clears_its_mark(
+    app_session: AppSessionFactory,
+) -> None:
+    """Re-review of F10: an attempt of this leg that never finished stored a
+    call before dying (a runtime that commits as it goes), and marked where
+    its calls began. The rerun records that call again: listed once. The
+    earlier leg's identical read before the mark stays, and the mark is
+    cleared with the leg's final write."""
+    from oc8.runtime.approval_resume import call_signature
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+    read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    partial = {**read, "startedAt": "x"}
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **(run.context or {}),
+            "toolCalls": [read, held, partial],
+            "legCallsFrom": 2,
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_signature("mail_reply", {"uid": 1}),
+                    "tool": "mail_reply",
+                    "arguments": {"uid": 1},
+                    "decision": "approve",
+                }
+            ],
+        }
+    again = {**read, "startedAt": "y"}
+    replied = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "done", "step": 2}
+
+    async def fake_runner(db: Any, **kw: Any) -> RunResult:
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="replied",
+            tool_calls=[again, replied],
+            steps=2,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(fake_runner),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["toolCalls"] == [read, {**again, "step": 2}, {**replied, "step": 3}]
+        assert run.context.get("legCallsFrom") is None

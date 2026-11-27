@@ -7,7 +7,7 @@ import io
 import json
 import uuid
 from collections import defaultdict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import ColumnElement, Select, and_, func, literal_column, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.repo import resolve_run_reach, restrict_to_run_reach
@@ -233,6 +234,7 @@ async def usage(
         totals[key]["cache_read"] += int(cache_read)
         totals[key]["cache_write"] += int(cache_write)
 
+    names = await _usage_group_names(db, group_by=group_by, groups=totals.keys())
     return [
         PrincipalUsageDTO(
             group=group,
@@ -244,6 +246,7 @@ async def usage(
             saved_cost_micros=v["saved_cost"],
             cache_read_tokens=v["cache_read"],
             cache_write_tokens=v["cache_write"],
+            **names.get(group, {}),
         )
         for group, v in totals.items()
     ]
@@ -424,6 +427,40 @@ async def usage_timeseries(
     return UsageTimeseriesDTO(
         range=range_, bucket=unit, timezone=zone_name, buckets=buckets, series=series
     )
+
+
+async def _usage_group_names(
+    db: AsyncSession, *, group_by: str, groups: Iterable[str]
+) -> dict[str, dict[str, str | None]]:
+    """`name`, `department_id` and `department_name` per usage group, in one
+    query for the whole page. Read straight from the tables, not through the
+    agent or department lists: those leave a member's personal ones out for an
+    admin, while the name stays metadata the admin keeps (R2), and an archived
+    agent's past spend keeps its name too (same as `GET /usage/export`)."""
+    ids = [uuid.UUID(g) for g in groups if g != "unassigned"]
+    if not ids:
+        return {}
+    if group_by == "department":
+        dept_rows = await db.execute(
+            select(m.Department.id, m.Department.name).where(m.Department.id.in_(ids))
+        )
+        return {
+            str(dept_id): {"name": name, "department_id": str(dept_id), "department_name": name}
+            for dept_id, name in dept_rows.all()
+        }
+    agent_rows = await db.execute(
+        select(m.Agent.id, m.Agent.name, m.Agent.department_id, m.Department.name)
+        .outerjoin(m.Department, m.Department.id == m.Agent.department_id)
+        .where(m.Agent.id.in_(ids))
+    )
+    return {
+        str(agent_id): {
+            "name": name,
+            "department_id": str(dept_id) if dept_id else None,
+            "department_name": dept_name,
+        }
+        for agent_id, name, dept_id, dept_name in agent_rows.all()
+    }
 
 
 # Column names are stable; new columns may be added. They are the

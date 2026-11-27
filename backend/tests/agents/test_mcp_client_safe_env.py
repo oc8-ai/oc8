@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from oc8.agent.mcp_client import _SITECUSTOMIZE_DIR, _safe_env
 from oc8.net.outbound import USER_AGENT
 
@@ -39,3 +41,24 @@ def test_sitecustomize_file_actually_exists_on_disk() -> None:
     from pathlib import Path
 
     assert (Path(_SITECUSTOMIZE_DIR) / "sitecustomize.py").is_file()
+
+
+def test_the_operators_trust_store_reaches_the_tool_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Paths, not secrets: a private CA the operator trusts for core (its
+    # connection checks, pollers) must be trusted by the tools too.
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/oc8/ca.pem")
+    monkeypatch.setenv("SSL_CERT_DIR", "/etc/oc8/certs")
+    env = _safe_env(None)
+    assert env["SSL_CERT_FILE"] == "/etc/oc8/ca.pem"
+    assert env["SSL_CERT_DIR"] == "/etc/oc8/certs"
+
+
+def test_an_empty_trust_store_setting_is_not_passed_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An empty SSL_CERT_FILE makes OpenSSL load no file instead of the system
+    # store: a tool server must get it unset, as if never set.
+    monkeypatch.setenv("SSL_CERT_FILE", "")
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    env = _safe_env(None)
+    assert "SSL_CERT_FILE" not in env and "SSL_CERT_DIR" not in env

@@ -28,7 +28,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
-from oc8.capas.manifest import ManifestError
+from oc8.authz.pdp import UsageLimit
+from oc8.capas.manifest import ManifestError, check_limits_within_only, parse_usage_limits
 
 #: Fields whose value, when numeric, is subject to the "min/max must bracket
 #: the shipped default" rule. Kept as a set of attribute names rather than
@@ -71,7 +72,14 @@ class Guardrail(BaseModel):
     #: of the connection's tools. See `GuardrailPreset.only` for the full
     #: rationale (a euro threshold cannot gate a deletion).
     only: tuple[str, ...] = ()
+    #: Usage limits, as on `GuardrailPreset.limits`.
+    limits: list[UsageLimit] = []
     adjustable: list[GuardrailAdjustable] = []
+
+    @field_validator("limits", mode="before")
+    @classmethod
+    def _parse_limits(cls, v: Any) -> list[UsageLimit]:
+        return parse_usage_limits(v)
 
     @field_validator("approval_eur", mode="before")
     @classmethod
@@ -94,6 +102,7 @@ class Guardrail(BaseModel):
 
     @model_validator(mode="after")
     def _validate_adjustable_fields(self) -> Guardrail:
+        check_limits_within_only(self.key, self.limits, self.only)
         known_fields = type(self).model_fields.keys()
         for adj in self.adjustable:
             if adj.field not in known_fields:

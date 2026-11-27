@@ -150,3 +150,34 @@ async def record_invocation(
         )
         .on_conflict_do_nothing(index_elements=["tenant_id", "task_id", "tool", "args_hash"])
     )
+
+
+async def claim_invocation(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    task_id: uuid.UUID,
+    tool: str,
+    arguments: Mapping[str, Any],
+    result: str,
+) -> bool:
+    """`record_invocation` that says whether THIS request wrote the row:
+    `INSERT ... ON CONFLICT DO NOTHING RETURNING`. A concurrent insert of the
+    same key blocks on the unique index until the first transaction ends,
+    then returns nothing -- so exactly one claimant wins."""
+    won = (
+        await db.execute(
+            pg_insert(m.ToolInvocation)
+            .values(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                task_id=task_id,
+                tool=tool,
+                args_hash=args_fingerprint(arguments),
+                result=result,
+            )
+            .on_conflict_do_nothing(index_elements=["tenant_id", "task_id", "tool", "args_hash"])
+            .returning(m.ToolInvocation.id)
+        )
+    ).scalar_one_or_none()
+    return won is not None

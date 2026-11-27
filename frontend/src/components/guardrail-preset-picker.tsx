@@ -34,6 +34,18 @@ export interface GuardrailPreset {
    * them. Must survive selection into `GuardrailValue` -- see the module
    * doc above. */
   only: string[];
+  /** Usage limits applying the preset writes into the policy -- same weight
+   * as `only`: dropping them silently removes the preset's cap. */
+  limits: UsageLimit[];
+}
+
+/** Mirrors `UsageLimitDTO` (`backend/src/oc8/schemas/dto.py`): at most `max`
+ * successful calls of `tools`, together, per UTC day or hour -- counted per
+ * agent by the core. */
+export interface UsageLimit {
+  tools: string[];
+  max: number;
+  per: "day" | "hour";
 }
 
 /** Mirrors `ConditionDTO`/`ConditionWriteDTO` (`backend/src/oc8/schemas/dto.py`,
@@ -70,6 +82,8 @@ export interface GuardrailValue {
   /** Generic "with limits" rules -- see `Condition`. Additive alongside
    * `approvalEur`/`approvalActions`, mirroring `ToolPolicy.conditions`. */
   conditions: Condition[];
+  /** Usage limits -- see `UsageLimit`. */
+  limits: UsageLimit[];
 }
 
 /** Mirrors `GuardrailAdjustableDTO` (`backend/src/oc8/schemas/dto.py`)
@@ -110,12 +124,27 @@ export interface GuardrailLibraryEntry {
   approvalEur: number | null;
   approvalActions: string[];
   only: string[];
+  limits: UsageLimit[];
   adjustable: GuardrailAdjustable[];
 }
 
 function sameSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   return [...a].sort().join(",") === [...b].sort().join(",");
+}
+
+/** The counter a limit names: its tools in any order, plus its period. Two
+ * limits with the same key count the same calls. */
+export function limitKey(limit: UsageLimit): string {
+  return `${[...limit.tools].sort().join("/")}:${limit.per}`;
+}
+
+/** Same limits: what they count AND how many. A changed `max` is a policy
+ * the preset does not describe, so it reads as "customised" like any other
+ * edit -- a preset named "max 50 a day" must never be shown selected for 80. */
+function sameLimits(a: UsageLimit[] | undefined, b: UsageLimit[] | undefined): boolean {
+  const sig = (lim: UsageLimit) => `${limitKey(lim)}=${lim.max}`;
+  return sameSet((a ?? []).map(sig), (b ?? []).map(sig));
 }
 
 export function matches(
@@ -128,6 +157,7 @@ export function matches(
     preset.modify === value.modify &&
     sameSet(preset.approvalActions, value.approvalActions) &&
     sameSet(preset.only, value.only) &&
+    sameLimits(preset.limits, value.limits) &&
     (!hasValueSpec || preset.approvalEur === value.approvalEur)
   );
 }
@@ -140,6 +170,7 @@ export function policyOf(preset: GuardrailPreset): GuardrailValue {
     approvalEur: preset.approvalEur,
     only: preset.only,
     conditions: [],
+    limits: preset.limits ?? [],
   };
 }
 
@@ -208,6 +239,7 @@ export function libraryPolicyOf(entry: GuardrailLibraryEntry): GuardrailValue {
     approvalEur: entry.approvalEur,
     only: entry.only,
     conditions: [],
+    limits: entry.limits ?? [],
   };
 }
 
@@ -230,6 +262,7 @@ export function libraryMatches(
     entry.modify === value.modify &&
     sameSet(entry.approvalActions, value.approvalActions) &&
     sameSet(entry.only, value.only) &&
+    sameLimits(entry.limits, value.limits) &&
     (!hasValueSpec || eurIsAdjustable || entry.approvalEur === value.approvalEur)
   );
 }

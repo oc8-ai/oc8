@@ -90,7 +90,7 @@ async def test_new_mail_becomes_one_event_with_payload_and_summary(
     attachment = await tools.CALL_HANDLERS["mail_get_attachment"](
         {"id": payload["id"], "attachment_id": "1"}
     )
-    assert attachment["name"] == "order.pdf"
+    assert attachment.name == "order.pdf"
 
     # Polling never marks mail read.
     assert mail["unread"] is True
@@ -149,16 +149,20 @@ async def test_a_malformed_cursor_takes_a_new_baseline(
 
 
 @pytest.mark.parametrize(
-    ("headers", "sender"),
+    ("headers", "sender", "why"),
     [
-        ({}, "Agent Smith <agent@example.com>"),
-        ({}, "AGENT@example.com"),
-        ({"Auto-Submitted": "auto-replied"}, None),
-        ({"Auto-Submitted": "auto-generated; owner-email=x@y"}, None),
-        ({"Precedence": "bulk"}, None),
-        ({"Precedence": "junk"}, None),
-        ({"Precedence": "List"}, None),
-        ({"Auto-Submitted": ["no", "auto-generated"]}, None),
+        ({}, "Agent Smith <agent@example.com>", "mail sent from this mailbox"),
+        ({}, "AGENT@example.com", "mail sent from this mailbox"),
+        ({"Auto-Submitted": "auto-replied"}, None, "automatic mail (Auto-Submitted)"),
+        (
+            {"Auto-Submitted": "auto-generated; owner-email=x@y"},
+            None,
+            "automatic mail (Auto-Submitted)",
+        ),
+        ({"Precedence": "bulk"}, None, "bulk or list mail"),
+        ({"Precedence": "junk"}, None, "bulk or list mail"),
+        ({"Precedence": "List"}, None, "bulk or list mail"),
+        ({"Auto-Submitted": ["no", "auto-generated"]}, None, "automatic mail (Auto-Submitted)"),
     ],
 )
 async def test_loop_protection_skips_automatic_mail_and_moves_on(
@@ -167,6 +171,7 @@ async def test_loop_protection_skips_automatic_mail_and_moves_on(
     make_mail: Any,
     headers: dict[str, str],
     sender: str | None,
+    why: str,
 ) -> None:
     fields = greenmail.fields()
     cursor = await baseline(source, fields)
@@ -178,7 +183,10 @@ async def test_loop_protection_skips_automatic_mail_and_moves_on(
 
     result = await source.poll(fields, INBOX, cursor)
     assert [e.payload["message_id"] for e in result.events] == ["<real@x>"]
-    assert (await source.poll(fields, INBOX, result.next_cursor)).events == []
+    # Said, so the trigger can show it, never silent.
+    assert result.skipped == [why]
+    again = await source.poll(fields, INBOX, result.next_cursor)
+    assert again.events == [] and again.skipped == []
 
 
 async def test_a_delivery_report_is_skipped(source: ModuleType, greenmail: Any) -> None:
@@ -195,6 +203,7 @@ async def test_a_delivery_report_is_skipped(source: ModuleType, greenmail: Any) 
     greenmail.append(report)
     result = await source.poll(fields, INBOX, cursor)
     assert result.events == []
+    assert result.skipped == ["delivery report"]
     assert result.next_cursor["last_uid"] > cursor["last_uid"]
 
 
@@ -286,6 +295,16 @@ async def test_pop3_baseline_new_mail_and_seen_list(
     assert "Subject: Fresh" in event.summary
     assert len(result.next_cursor["seen"]) == 3
     assert (await source.poll(fields, INBOX, result.next_cursor)).events == []
+
+
+async def test_pop3_says_what_loop_protection_skipped(
+    source: ModuleType, greenmail: Any, make_mail: Any
+) -> None:
+    fields = greenmail.fields(protocol="pop3")
+    cursor = await baseline(source, fields)
+    greenmail.append(make_mail(headers={"Precedence": "bulk"}))
+    result = await source.poll(fields, INBOX, cursor)
+    assert result.events == [] and result.skipped == ["bulk or list mail"]
 
 
 def test_pop3_seen_list_is_capped_and_old_mail_beyond_it_stays_old(

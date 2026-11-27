@@ -11,6 +11,26 @@ msgstr "Selbstständig antworten"
 msgid "Approval before sending"
 msgstr "Freigabe vor dem Senden"
 
+msgid "Autonomous, max 50 mails a day"
+msgstr "Selbstständig, max. 50 Mails am Tag"
+
+msgid ""
+"Reads mail and works on its own, without approval: it can write new mail to "
+"anyone, reply, forward and mark mail read, up to 50 mails a day per agent "
+"(sends, replies and forwards together; each mail up to 50 recipients; the "
+"count resets at 00:00 UTC). A mail counts once it was handed to the mail "
+"tool, even if sending then failed. It cannot move or delete mail. For a "
+"mailbox with sensitive mail, choose Approval before sending."
+msgstr ""
+"Liest E-Mails und arbeitet selbstständig, ohne Freigabe: Er kann neue "
+"E-Mails an beliebige Adressen schreiben, antworten, weiterleiten und E-Mails "
+"als gelesen markieren, bis zu 50 Mails am Tag pro Agent (Senden, Antworten "
+"und Weiterleiten zusammen; jede Mail an bis zu 50 Empfänger; der Zähler "
+"beginnt um 00:00 UTC neu). Eine Mail zählt, sobald sie dem Mail-Tool "
+"übergeben wurde, auch wenn das Senden danach fehlschlägt. Er kann keine "
+"E-Mails verschieben oder löschen. Für ein Postfach mit sensiblen E-Mails "
+"wähle Freigabe vor dem Senden."
+
 msgid ""
 "Can list, search and read mail and its attachments, but sends, moves and "
 "deletes nothing."
@@ -142,6 +162,18 @@ msgstr "Absenderadresse"
 
 msgid "Sender name"
 msgstr "Absendername"
+
+msgid "CA certificate"
+msgstr "CA-Zertifikat"
+
+msgid "Only if your mail server's certificate comes from your organisation's own certificate authority: paste that CA's certificate (PEM). It is trusted besides the usual ones; the server's certificate and name are still checked."
+msgstr "Nur wenn das Zertifikat des Mailservers von der eigenen Zertifizierungsstelle der Organisation stammt: hier das Zertifikat dieser CA (PEM) einfügen. Es gilt zusätzlich zu den üblichen; Zertifikat und Name des Servers werden weiterhin geprüft."
+
+msgid "Sent folder"
+msgstr "Ordner für gesendete Mails"
+
+msgid "IMAP only: where a copy of each sent mail is kept, marked read. Leave empty to use the folder the server marks as Sent, or one named like it. Enter - to keep no copy. Gmail and Microsoft 365 keep their own copy, so none is added there."
+msgstr "Nur IMAP: Hier wird eine Kopie jeder gesendeten Mail abgelegt, als gelesen markiert. Leer lassen, um den Ordner zu nutzen, den der Server als „Gesendet“ kennzeichnet, oder einen so benannten. Mit - wird keine Kopie abgelegt. Gmail und Microsoft 365 legen selbst eine Kopie ab, dort kommt keine hinzu."
 
 msgid "Set up Email"
 msgstr "E-Mail einrichten"

@@ -492,3 +492,198 @@ async def test_a_cascade_is_published_so_the_next_run_actually_gets_the_tool(
         status = await draft_status(db, reloaded_mid_edit)
         assert status.dirty is True
         assert "narrowing.tools" in status.changed_fields
+
+
+@pytest.mark.parametrize(("frame_eur", "cascaded"), [(200, None), (0, 0)])
+async def test_cascade_copies_no_positive_threshold_onto_a_connection_without_value_spec(
+    app_session: AppSessionFactory, frame_eur: int, cascaded: int | None
+) -> None:
+    """The cascade writes the department's policy onto the agent. A positive
+    threshold on a connection that reports no amount never fires, and copied
+    it goes stale when the department changes its value -- the frame's own
+    applies anyway (`connections.value_spec`). €0 is enforced and copied."""
+    from oc8.departments.frames import cascade_department_tools_change
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Sales", frame={"tools": {}})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora", narrowing={})
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            name="microsoft365",
+            server_url="",
+            transport="stdio",
+            config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+        )
+        db.add_all([agent, conn])
+        await db.flush()
+        policy = {"enabled": True, "read": True, "modify": True, "approval_eur": frame_eur}
+        await cascade_department_tools_change(
+            db, old_tools={}, new_tools={"microsoft365": policy}, agents=[agent]
+        )
+        copied = agent.narrowing["tools"]["microsoft365"]
+    assert copied["enabled"] is True
+    assert copied.get("approval_eur") == cascaded
+
+
+async def test_a_cascade_keeps_the_login_an_agent_pinned(
+    app_session: AppSessionFactory,
+) -> None:
+    """Security review of N6: a department change rewrites what an untouched
+    agent may do with a tool, never whose account it uses."""
+    tenant = uuid.uuid4()
+    login = str(uuid.uuid4())
+    async with app_session(tenant) as db:
+        dept = m.Department(
+            tenant_id=tenant, name="Sales", frame={"tools": {"Odoo": {"enabled": False}}}
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Nora",
+            narrowing={"tools": {"Odoo": {"enabled": False, "connection_id": login}}},
+        )
+        db.add(agent)
+        await db.flush()
+        dept_id, agent_id = dept.id, agent.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.put(
+                f"/api/v1/departments/{dept_id}/tools",
+                json={"tools": {"Odoo": {"enabled": True, "read": True}}},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+        reloaded = await db.get(m.Agent, agent_id)
+        assert reloaded is not None
+        assert reloaded.narrowing["tools"]["Odoo"]["enabled"] is True
+        assert reloaded.narrowing["tools"]["Odoo"]["connection_id"] == login
+
+
+async def test_a_cascade_publishes_nothing_over_a_pending_hire(
+    app_session: AppSessionFactory,
+) -> None:
+    """Review of round 7: a hire that awaits approval keeps the v1 its
+    approver sees. The cascade skips publishing it (the change stays in its
+    working copy) instead of failing for the whole department."""
+    from oc8.agents.versioning import draft_status, publish_version, resolve_version
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(
+            tenant_id=tenant, name="Sales", frame={"tools": {"Odoo": {"enabled": False}}}
+        )
+        db.add(dept)
+        await db.flush()
+        ready = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora",
+            narrowing={"tools": {"Odoo": {"enabled": False}}},
+        )
+        pending = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Pia", status="pending_approval",
+            narrowing={"tools": {"Odoo": {"enabled": False}}},
+        )
+        db.add_all([ready, pending])
+        await db.flush()
+        await publish_version(db, ready, note="v1")
+        await publish_version(db, pending, note="v1", at_hire=True)
+        dept_id, ready_id, pending_id = dept.id, ready.id, pending.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.put(
+                f"/api/v1/departments/{dept_id}/tools",
+                json={"tools": {"Odoo": {"enabled": True}}},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+        reloaded_ready = await db.get(m.Agent, ready_id)
+        reloaded_pending = await db.get(m.Agent, pending_id)
+        assert reloaded_ready is not None and reloaded_pending is not None
+        pinned = await resolve_version(db, None, reloaded_ready)
+        assert pinned["narrowing"]["tools"]["Odoo"]["enabled"] is True
+        pinned = await resolve_version(db, None, reloaded_pending)
+        assert pinned["narrowing"]["tools"]["Odoo"]["enabled"] is False
+        assert (await draft_status(db, reloaded_pending)).dirty is True
+
+
+@pytest.mark.parametrize("how", ["put", "reset"])
+async def test_the_cascade_publishes_a_ready_agent_but_not_one_awaiting_hire_approval(
+    app_session: AppSessionFactory, how: str
+) -> None:
+    """An agent still `pending_approval` is not live: the department change reaches
+    its working copy and publishes nothing; a clean, ready colleague is published."""
+    from sqlalchemy import func, select
+
+    from oc8.agents.versioning import publish_version
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Sales",
+            frame={"tools": {"Odoo": {"enabled": True}}},
+            frame_capa_defaults={"tools": {"Odoo": {"enabled": False}}},
+        )
+        db.add(dept)
+        await db.flush()
+        ready = m.Agent(tenant_id=tenant, department_id=dept.id, name="Ready", narrowing={})
+        pending = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Pending",
+            narrowing={},
+            status="pending_approval",
+        )
+        db.add_all([ready, pending])
+        await db.flush()
+        await publish_version(db, ready, note="v1")
+        await publish_version(db, pending, note="v1", at_hire=True)
+        dept_id, ready_id, pending_id = dept.id, ready.id, pending.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            if how == "put":
+                r = await c.put(
+                    f"/api/v1/departments/{dept_id}/tools",
+                    json={"tools": {"Odoo": {"enabled": False}}},
+                    headers=_headers(tenant),
+                )
+            else:
+                r = await c.post(
+                    f"/api/v1/departments/{dept_id}/tools/Odoo/reset", headers=_headers(tenant)
+                )
+            assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+
+        async def versions(agent_id: uuid.UUID) -> int:
+            return int(
+                (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(m.AgentVersion)
+                        .where(m.AgentVersion.agent_id == agent_id)
+                    )
+                ).scalar_one()
+            )
+
+        ready_row = await db.get(m.Agent, ready_id)
+        pending_row = await db.get(m.Agent, pending_id)
+        assert ready_row is not None and pending_row is not None
+        assert ready_row.narrowing["tools"]["Odoo"]["enabled"] is False
+        assert pending_row.narrowing["tools"]["Odoo"]["enabled"] is False
+        assert await versions(ready_id) == 2
+        assert await versions(pending_id) == 1

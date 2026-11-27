@@ -16,12 +16,12 @@ import datetime as dt
 import io
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import ColumnElement, Select, Text, func, literal_column, select
+from sqlalchemy import ColumnElement, Select, Text, func, literal_column, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from oc8 import models as m
@@ -32,11 +32,16 @@ from oc8.api.v1._export_utils import (
 from oc8.api.v1._export_utils import (
     parse_date_bound as _parse_bound,
 )
+from oc8.approvals.repo import ADMIN_KEPT_ACTIONS, admin_kept_approval_ids
 from oc8.audit.integrity import (
     BATCH as BATCH,  # re-exported: tests monkeypatch this name
 )
 from oc8.audit.integrity import get_checkpoint, verify_full, verify_incremental
+from oc8.auth.principal import Principal
 from oc8.authz.permissions import AUDIT, AUDIT_VERIFY, VIEW, perm
+from oc8.authz.scope import scope_for_principal
+from oc8.departments.repo import personal_content_hidden
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.schemas.dto import AuditEventDTO, AuditIntegrityDTO, AuditPageDTO
 from oc8.secrets.keyprovider import SecretError
 
@@ -51,6 +56,167 @@ _require_read = require_permission(perm(AUDIT, VIEW))
 _require_verify = require_permission(AUDIT_VERIFY)
 
 MAX_LIMIT = 200
+
+
+#: What a personal agent's event may not show anybody but its owner: the
+#: content the event was about (a mission before and after, a memory snippet,
+#: a tool call's arguments, a search query, a task). The ids, the action, who
+#: and when stay -- the entry is kept, only what the owner wrote or the agent
+#: did is not repeated to an administrator.
+_PERSONAL_CONTENT_KEYS: frozenset[str] = frozenset(
+    {
+        "before",
+        "after",
+        "mission",
+        "instruction",
+        "instructions",
+        "prompt",
+        "prompt_starters",
+        "persona",
+        "task",
+        "task_text",
+        "content",
+        "content_snippet",
+        "arguments",
+        "query",
+        "question",
+        "answer",
+        "text",
+        "body",
+    }
+)
+
+#: Events whose `before`/`after` hold metadata an admin already reads on the
+#: agent itself -- its name, its autonomy level -- not content. Every other
+#: personal-agent event keeps them stripped (a mission before and after).
+_METADATA_CHANGE_ACTIONS: frozenset[str] = frozenset({"agent.renamed", "agent.autonomy.updated"})
+
+
+def _content_keys(action: str) -> frozenset[str]:
+    if action in _METADATA_CHANGE_ACTIONS:
+        return _PERSONAL_CONTENT_KEYS - {"before", "after"}
+    return _PERSONAL_CONTENT_KEYS
+
+
+#: Is this personal department's content hidden from the reader?
+_HidesDepartment = Callable[[uuid.UUID], bool]
+
+
+async def _personal_reader(db: DbSession, principal: Principal) -> _HidesDepartment:
+    """The reader's side of the personal-content rule, resolved once per
+    request: the owner's seat sees its own department's content, everybody
+    else (an auditor, an admin, a token with no member row) sees none."""
+    try:
+        _member, scope = await scope_for_principal(db, principal)
+    except PermissionError:
+        return lambda _department_id: True
+    return lambda department_id: personal_content_hidden(
+        kind=DEPARTMENT_KIND_PERSONAL, department_id=department_id, scope=scope
+    )
+
+
+def _as_uuid(value: object) -> uuid.UUID | None:
+    if isinstance(value, uuid.UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return uuid.UUID(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _subjects(ev: m.AuditEvent) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
+    """The agents and departments one event is about: `agent_id` and
+    `department_id` in its resource, and the acting agent of an agent event
+    (a tool call carries no `agent_id` of its own)."""
+    resource = ev.resource if isinstance(ev.resource, dict) else {}
+    agents = {a for a in (_as_uuid(resource.get("agent_id")),) if a is not None}
+    if ev.actor_type == "agent" and ev.actor_id is not None:
+        agents.add(ev.actor_id)
+    departments = {d for d in (_as_uuid(resource.get("department_id")),) if d is not None}
+    return agents, departments
+
+
+async def _events_to_dtos(
+    db: DbSession, events: Sequence[m.AuditEvent], hides: _HidesDepartment
+) -> list[AuditEventDTO]:
+    """`_event_to_dto` for one page, with a personal agent's content stripped
+    for every reader but its owner. One query per page resolves which of the
+    page's agents and departments are personal, archived and deleted ones
+    included, so rows written before this rule existed are covered too."""
+    subjects = [_subjects(ev) for ev in events]
+    agent_ids = set().union(*(a for a, _d in subjects)) if subjects else set()
+    department_ids = set().union(*(d for _a, d in subjects)) if subjects else set()
+    personal_agents: dict[uuid.UUID, uuid.UUID] = {}
+    personal_departments: set[uuid.UUID] = set()
+    if agent_ids or department_ids:
+        rows = await db.execute(
+            select(m.Department.id, m.Agent.id)
+            .select_from(m.Department)
+            .outerjoin(
+                m.Agent,
+                (m.Agent.department_id == m.Department.id) & m.Agent.id.in_(agent_ids),
+            )
+            .where(
+                m.Department.kind == DEPARTMENT_KIND_PERSONAL,
+                or_(m.Department.id.in_(department_ids), m.Agent.id.in_(agent_ids)),
+            )
+        )
+        for department_id, agent_id in rows.all():
+            personal_departments.add(department_id)
+            if agent_id is not None:
+                personal_agents[agent_id] = department_id
+    kept_reasons = await _admin_kept_reasons(db, events)
+    out: list[AuditEventDTO] = []
+    for ev, (agents, departments) in zip(events, subjects, strict=True):
+        owners = {personal_agents[a] for a in agents if a in personal_agents}
+        owners |= departments & personal_departments
+        dto = _event_to_dto(ev)
+        if any(hides(d) for d in owners):
+            if isinstance(dto.resource, dict):
+                stripped = _content_keys(ev.action)
+                dto.resource = {k: v for k, v in dto.resource.items() if k not in stripped}
+            # A reason is free text, and a denial or a decision can quote what
+            # the agent tried: a backstop beside the content keys, kept off
+            # every reader but the owner. The decision itself stays -- and so
+            # does the reason of an event about what the admins keep (T4-4).
+            if ev.id not in kept_reasons:
+                dto.reason = None
+        out.append(dto)
+    return out
+
+
+async def _admin_kept_reasons(db: DbSession, events: Sequence[m.AuditEvent]) -> set[uuid.UUID]:
+    """The events of one page whose `reason` stays visible to an admin although
+    their agent is personal (ruling T4-4): what the admins see and decide
+    themselves (ruling R2, U3) -- a budget event, and the decision of an
+    `ADMIN_KEPT_ACTIONS` card (budget incident, blast radius), whose reason
+    is often the admin's own. The card's kind is read from the decision's
+    resource, or, for a line written before it carried one, from the card in
+    one query per page. A card that resolves to nothing keeps its reason
+    stripped (fail closed)."""
+    kept: set[uuid.UUID] = set()
+    lookup: dict[uuid.UUID, uuid.UUID] = {}
+    for ev in events:
+        if ev.category == "budget":
+            kept.add(ev.id)
+            continue
+        if not ev.action.startswith("approval."):
+            continue
+        resource = ev.resource if isinstance(ev.resource, dict) else {}
+        action_type = resource.get("action_type")
+        if isinstance(action_type, str):
+            if action_type in ADMIN_KEPT_ACTIONS:
+                kept.add(ev.id)
+            continue
+        approval_id = _as_uuid(resource.get("approval_id"))
+        if approval_id is not None:
+            lookup[ev.id] = approval_id
+    if lookup:
+        found = await admin_kept_approval_ids(db, set(lookup.values()))
+        kept |= {ev_id for ev_id, approval_id in lookup.items() if approval_id in found}
+    return kept
 
 
 def _event_to_dto(ev: m.AuditEvent) -> AuditEventDTO:
@@ -118,6 +284,7 @@ def _resource_key(key: str) -> ColumnElement[str]:
 @router.get("/audit", response_model=AuditPageDTO, dependencies=[Depends(_require_read)])
 async def list_audit_events(
     db: DbSession,
+    principal: CurrentPrincipal,
     category: str | None = None,
     action: str | None = None,
     actor_type: str | None = None,
@@ -152,7 +319,8 @@ async def list_audit_events(
     )
     page = rows[:limit]
     next_before = page[-1].seq if len(rows) > limit and page else None
-    return AuditPageDTO(events=[_event_to_dto(e) for e in page], next_before_seq=next_before)
+    hides = await _personal_reader(db, principal)
+    return AuditPageDTO(events=await _events_to_dtos(db, page, hides), next_before_seq=next_before)
 
 
 # Column order is stable; column NAMES are the AuditEventDTO camelCase aliases
@@ -194,6 +362,7 @@ def _row(dto: AuditEventDTO) -> list[str]:
 @router.get("/audit/export", dependencies=[Depends(_require_read)])
 async def export_audit_events(
     db: DbSession,
+    principal: CurrentPrincipal,
     format: Literal["csv", "jsonl"] = "csv",
     category: str | None = None,
     action: str | None = None,
@@ -207,6 +376,7 @@ async def export_audit_events(
 ) -> StreamingResponse:
     from_ts = _parse_bound(from_, field="from", end_of_day=False)
     to_ts = _parse_bound(to, field="to", end_of_day=True)
+    hides = await _personal_reader(db, principal)
     base = _filtered(
         select(m.AuditEvent),
         category=category,
@@ -250,8 +420,7 @@ async def export_audit_events(
             )
             if not rows:
                 return
-            for ev in rows:
-                dto = _event_to_dto(ev)
+            for ev, dto in zip(rows, await _events_to_dtos(db, rows, hides), strict=True):
                 if format == "csv":
                     writer.writerow(_row(dto))
                 else:

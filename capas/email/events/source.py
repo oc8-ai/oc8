@@ -11,8 +11,9 @@ What a poll does is described on `mailbox.poll`; what the agent receives is
 `mailbox.render_summary`, which carries the mail id and the attachment ids
 the tools take, since the run's stored payload is not shown to the model.
 Mail the loop protection skips (`mailbox.skip_reason`) moves the cursor on
-without an event; so does a mail that cannot be read at all. The delivery id
-is the mailbox's own id for the mail, never its Message-ID.
+without an event, and the poll says why (`PollResult.skipped`, shown on the
+trigger); a mail that cannot be read at all moves it on without an event too.
+The delivery id is the mailbox's own id for the mail, never its Message-ID.
 """
 
 from __future__ import annotations
@@ -74,12 +75,11 @@ def guard(host: str) -> list[str]:
 
 def _poll(
     login_fields: dict[str, str], folder: str, cursor: dict[str, Any] | None
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     account = mailbox.Account.from_fields(login_fields)
-    result: tuple[dict[str, Any], list[dict[str, Any]]] = mailbox.poll(
-        account, folder, cursor, MAX_EVENTS_PER_TICK, guard
-    )
-    return result
+    skipped: list[str] = []
+    next_cursor, events = mailbox.poll(account, folder, cursor, MAX_EVENTS_PER_TICK, guard, skipped)
+    return next_cursor, events, skipped
 
 
 async def poll(
@@ -88,10 +88,12 @@ async def poll(
     """All the work, reading and rendering each mail included, runs in a
     thread: nothing a mail contains can hold up the event loop."""
     folder = str(event_config.get("folder") or "").strip() or "INBOX"
-    next_cursor, events = await asyncio.to_thread(_poll, login_fields, folder, cursor)
+    next_cursor, events, skipped = await asyncio.to_thread(_poll, login_fields, folder, cursor)
     if cursor is None:
         return PollResult(next_cursor=next_cursor)
-    return PollResult(next_cursor=next_cursor, events=[PolledEvent(**e) for e in events])
+    return PollResult(
+        next_cursor=next_cursor, events=[PolledEvent(**e) for e in events], skipped=skipped
+    )
 
 
 def register(contrib: Any) -> None:

@@ -921,7 +921,7 @@ export function CustomMcpWizard({
               <button
                 onClick={() => void requestClose()}
                 className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-background/40 hover:text-foreground"
-                aria-label="Close"
+                aria-label={t("Close", "Schließen")}
               >
                 <X className="h-4 w-4" />
               </button>

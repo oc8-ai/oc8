@@ -12,7 +12,7 @@ server_url = ""
 # separate category.
 [connections.scopes]
 read = [
-    "mail_search", "mail_get", "mail_list_folders",
+    "mail_search", "mail_get", "mail_list_folders", "mail_list_attachments", "mail_get_attachment",
     "calendar_list_events", "calendar_get_event", "calendar_check_free_busy",
     "files_list", "files_get_content", "files_search", "sites_list",
     "word_get_text", "excel_read_range", "excel_list_worksheets",
@@ -54,6 +54,12 @@ destructive_tools = ["mail_delete", "files_delete", "calendar_cancel_event"]
 irreversible_tools = ["mail_send", "mail_reply"]
 read_before_write = true
 entity_lookup_tools = ["mail_search", "calendar_list_events"]
+
+# Who a new mail reaches: core keys the one-per-task guard on these people, so
+# a reworded mail to the same person is refused and one to somebody else is
+# not. A reply names no recipient and stays at one per task.
+[connections.config.focus_spec.outward_fields]
+mail_send = ["to"]
 
 # NEUTRAL SEAM (record_url): Graph returns each file's and message's own link
 # (`webUrl`, `webLink`), so there is no template. A tool result is untrusted

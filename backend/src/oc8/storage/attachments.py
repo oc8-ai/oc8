@@ -16,10 +16,12 @@ the turn falls back to when indexing fails.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import mimetypes
 import posixpath
 import uuid
+from functools import partial
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -175,9 +177,16 @@ async def store_attachment_bytes(
         )
         try:
             # Source files are plain text to read back, whatever their type.
-            extracted_text = extract_text(
-                content=payload,
-                content_type="text/plain" if content_type in SOURCE_CONTENT_TYPES else content_type,
+            # Parsing a PDF or a spreadsheet blocks for as long as it takes:
+            # off the event loop, so other runs and requests keep moving.
+            extracted_text = await asyncio.to_thread(
+                partial(
+                    extract_text,
+                    content=payload,
+                    content_type=(
+                        "text/plain" if content_type in SOURCE_CONTENT_TYPES else content_type
+                    ),
+                )
             )
         except IngestionError:
             extracted_text = None  # storage still succeeds -- see files.py's Global Constraints

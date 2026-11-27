@@ -402,9 +402,17 @@ def test_boards_may_run_is_unchanged() -> None:
     dept = uuid.uuid4()
     pending = m.Agent(id=uuid.uuid4(), department_id=dept, name="P", status="pending_approval")
     live = m.Agent(id=uuid.uuid4(), department_id=dept, name="L", status="idle")
-    everyone = RunReach(every_agent=True, departments=frozenset())
-    sales_only = RunReach(every_agent=False, departments=frozenset({dept}))
-    elsewhere = RunReach(every_agent=False, departments=frozenset({uuid.uuid4()}))
+    none: frozenset[uuid.UUID] = frozenset()
+    everyone = RunReach(every_agent=True, departments=none, private=none, personal_refused=none)
+    sales_only = RunReach(
+        every_agent=False, departments=frozenset({dept}), private=none, personal_refused=none
+    )
+    elsewhere = RunReach(
+        every_agent=False,
+        departments=frozenset({uuid.uuid4()}),
+        private=none,
+        personal_refused=none,
+    )
 
     assert agent_runnable_in(everyone, pending) is False
     assert agent_runnable_in(sales_only, pending) is False
@@ -412,6 +420,18 @@ def test_boards_may_run_is_unchanged() -> None:
     assert agent_runnable_in(sales_only, live) is True
     assert agent_runnable_in(elsewhere, live) is False
     assert agent_runnable_in(everyone, None) is False
+    # A personal department the caller does not own: refused even to a
+    # caller who reaches every agent.
+    refused = RunReach(
+        every_agent=True,
+        departments=none,
+        private=frozenset({dept}),
+        personal_refused=frozenset({dept}),
+    )
+    assert agent_runnable_in(refused, live) is False
+    # A reach built to read runs cannot answer a start question.
+    with pytest.raises(ValueError):
+        agent_runnable_in(RunReach(every_agent=True, departments=none, private=none), live)
 
 
 async def test_match_without_tool_filter_returns_runnable_fitting_agent(

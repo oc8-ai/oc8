@@ -21,6 +21,13 @@ vi.mock("@/lib/hooks", () => ({
   useUpdateSkill: () => ({ mutate: vi.fn(), isPending: false }),
   usePublishSkillVersion: () => ({ mutate: vi.fn(), isPending: false }),
   useDuplicateSkill: () => ({ mutate: vi.fn(), isPending: false }),
+  useResetSkill: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+const granted = vi.hoisted(() => ({ current: ["skill:manage"] as string[] }));
+
+vi.mock("@/lib/governance-hooks", () => ({
+  useMay: () => (permission: string) => granted.current.includes(permission),
 }));
 
 import { SkillsPage } from "@/routes/skills";
@@ -102,5 +109,57 @@ describe("Skills list page", () => {
 
     expect(screen.getByRole("heading", { name: "New name" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Old name" })).toBeNull();
+  });
+
+  it("badges a customised shipped skill on its card", () => {
+    const shipped = {
+      id: "s2",
+      name: "Shipped skill",
+      description: "d",
+      category: "operations",
+      origin: "store",
+      version: "1.0.1",
+      author: "acme.skills",
+      tools: [],
+      knowledge: [],
+      guardrails: [],
+      instructions: "",
+      usedByAgents: 0,
+      updatedAt: "",
+      currentVersionId: "v2",
+      deletedAt: null,
+    };
+    useSkillsMock.mockReturnValue({
+      data: {
+        items: [
+          // `customized` drives the badge, not the timestamp: a skill edited
+          // before the flag existed has none.
+          { ...shipped, customized: true, customizedAt: null, shippedUpdateAvailable: true },
+          { ...shipped, id: "s3", name: "Untouched" },
+        ],
+        totalCount: 2,
+      },
+    });
+    renderPage();
+
+    expect(screen.getAllByText("Customised")).toHaveLength(1);
+    expect(screen.getAllByTitle("A newer shipped version is available")).toHaveLength(1);
+  });
+
+  it("offers New skill and Import to a caller with skill:manage", () => {
+    renderPage();
+    expect(screen.getByRole("button", { name: /new skill/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /import from source/i })).toBeInTheDocument();
+  });
+
+  it("offers neither New skill nor Import to a caller without skill:manage", () => {
+    granted.current = [];
+    try {
+      renderPage();
+      expect(screen.queryByRole("button", { name: /new skill/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /import from source/i })).not.toBeInTheDocument();
+    } finally {
+      granted.current = ["skill:manage"];
+    }
   });
 });

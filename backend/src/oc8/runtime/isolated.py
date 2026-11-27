@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +37,9 @@ from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.naming import container_name
 from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
 from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec, ScratchDir
+
+if TYPE_CHECKING:
+    from oc8.runtime.approval_resume import Decisions
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +96,7 @@ class DockerIsolatedRuntime:
         delegation_depth: int = 0,
         cancel_check: CancelCheck | None = None,
         inbox_check: InboxCheck | None = None,
-        pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
+        pre_decided: Decisions | None = None,
         originating_operator: str | None = None,
         # Accepted only to satisfy the RuntimeAdapter Protocol -- unused here
         # because the container never receives images through this call. It

@@ -29,6 +29,8 @@ MAIL_SMTP_USERNAME = "smtp_username"
 MAIL_SMTP_PASSWORD = "smtp_password"
 MAIL_FROM_ADDRESS = "from_address"
 MAIL_FROM_NAME = "from_name"
+MAIL_SENT_FOLDER = "sent_folder"
+MAIL_CA_CERTIFICATE = "ca_certificate"
 
 # Reading changes nothing (not even the read flag: mail is fetched with PEEK).
 # Everything else changes the mailbox or reaches a person.
@@ -58,6 +60,13 @@ PYTHONPATH = "/app/capas/email"
 [connections.config.focus_spec]
 id_fields = ["id"]
 search_tools = ["mail_search"]
+
+# Who a send or forward reaches: core keys the one-per-task guard on these
+# people, so a reworded mail to the same person is refused and one to somebody
+# else is not. A reply has no such field; it is keyed by the mail it answers.
+[connections.config.focus_spec.outward_fields]
+mail_send = ["to", "cc", "bcc"]
+mail_forward = ["to", "cc"]
 
 [connections.config.focus_spec.tool_entities]
 mail_get = "mail"

@@ -186,6 +186,16 @@ class ModelConfigRequest(CamelModel):
     max_steps: int | None = None
 
 
+class AutonomyRequest(CamelModel):
+    """How far an agent may act before asking (`agent.definition["autonomy"]`)
+    and which risk tiers it may then act on unasked (`["b5_grants"]`), read by
+    `agent.harness.stages.b_approval.posture`. Read and write never need a
+    grant; the tiers here are the ones that ask even an autonomous agent."""
+
+    autonomy: Literal["conservative", "default", "autonomous"]
+    grants: list[Literal["outward", "destructive", "irreversible"]] = Field(default_factory=list)
+
+
 class InstructionsRequest(CamelModel):
     instructions: str = ""
 

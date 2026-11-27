@@ -48,6 +48,14 @@ ALLOWED: dict[str, str] = {
     "api/v1/catalog.py": "a different permission (catalog:view), id-only reads",
     "api/v1/skills_write.py": "loads the agent it is about to assign a skill to",
     "metering/budget.py": "raises and reads its own tenant-scope incident; no human here",
+    "connections/access.py": (
+        "the binding and trigger fingerprints of an agent its caller already "
+        "holds (its department, a trigger's agent); digests, never shown to a person"
+    ),
+    "connections/confirmation.py": (
+        "a confirmation fingerprint of an agent its caller already holds (its "
+        "department, a trigger's agent); ids and digests, never shown to a person"
+    ),
     "connections/consolidate.py": (
         "the one-time fold of a tenant's tool setups (worker start, CLI): rewrites "
         "every agent's and department's pins; no human caller, nothing shown"
@@ -171,11 +179,23 @@ ALLOWED: dict[str, str] = {
         "flagged agent by that flag, provisioning it if missing -- a system "
         "provisioning helper with no human caller in the path, not a departmental browse"
     ),
+    "departments/personal.py": (
+        "owned_personal_department is an owner-keyed lookup of the caller's own "
+        "personal department (owner_member_id == the caller), and the module also "
+        "creates it lazily on first use -- the owner's own row by construction, "
+        "not a departmental browse; stamp_budget_override reads one department by "
+        "id only to set its override stamp, and returns nothing"
+    ),
     "agent/claims.py": "the runtime resolving a record-claim holder's display name",
     "agent/engine.py": "the agent runtime loading its OWN department's tool frame",
     "agents/hire.py": "hire_agent effect resolution acts on the approval's own bound agent",
     "api/llm_gateway.py": "agent-token-authenticated path, scoped to the token's own run",
     "api/mcp_gateway.py": "agent-token-authenticated path, scoped to the token's own run",
+    "api/v1/audit.py": (
+        "gated by audit:view (tenant-wide, the auditor's grant); reads only which agents "
+        "and departments of one page of events are personal, to strip their content -- "
+        "it narrows what the trail shows, it never lists an agent or department"
+    ),
     "api/v1/capas.py": "a different permission (plugin install), department-existence check only",
     "api/v1/internal_agent.py": "agent-token-authenticated path, scoped to the token's own run",
     "api/v1/mcp.py": (
@@ -187,7 +207,8 @@ ALLOWED: dict[str, str] = {
         "already uses for capa install/enable, not a narrower departmental seat. An "
         "operator packaging a Department/Agent/Skill they already administer into a "
         "portable capa is the same 'admin already sees every department' shape as "
-        "copilot/capabilities.py below, just reading full content instead of an id"
+        "copilot/capabilities.py below, just reading full content instead of an id; a "
+        "personal department or agent, its owner's alone, is refused as not found"
     ),
     "approvals/service.py": "approval-effect resolution acting on the approval's own bound agent",
     "copilot/capabilities.py": (
@@ -207,6 +228,10 @@ ALLOWED: dict[str, str] = {
     ),
     "collab/emit.py": "handoff department-name resolution, same rationale as api/v1/handoffs.py",
     "collab/intake.py": "handoff department-name and team-lead resolution, no human in this path",
+    "events/sources.py": (
+        "a background poller with no human caller, reading its own trigger's agent "
+        "to switch a trigger of an archived or missing agent off"
+    ),
     "evidence/sweep.py": "background retention sweep on its own tenant scope; no human here",
     "models/ops.py": (
         "sweep false-positive: 'department_id' is a column name inside index DDL text, "

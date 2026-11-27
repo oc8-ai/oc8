@@ -62,6 +62,9 @@ EXCLUDED_TABLES: frozenset[str] = frozenset(
         # where a polled trigger's poller left off: a restored trigger takes a
         # fresh baseline instead of catching up, and the poll errors are stale
         "event_source_cursor",
+        # usage-limit counts of the current day or hour: runtime state like
+        # the cursor above; a restored agent starts its window from zero
+        "tool_usage_counter",
     }
 )
 
