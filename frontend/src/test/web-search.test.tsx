@@ -4,14 +4,16 @@
 // a regenerate and an edit; web sources as external links; and the settings
 // panel, whose API key is write-only.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const conv = vi.hoisted(() => ({
   session: undefined as unknown,
   messages: [] as unknown[],
   turns: [] as unknown[],
+  liveRunIds: [] as string[],
 }));
+const steering = vi.hoisted(() => ({ value: undefined as unknown }));
 const send = vi.hoisted(() => vi.fn());
 const may = vi.hoisted(() => ({ manage: true }));
 
@@ -21,7 +23,7 @@ vi.mock("@/components/conversation/use-conversation", () => ({
     messages: conv.messages,
     turns: conv.turns,
     isLoading: false,
-    liveRunIds: [],
+    liveRunIds: conv.liveRunIds,
     addPendingRun: vi.fn(),
   }),
 }));
@@ -47,7 +49,7 @@ vi.mock("@/lib/governance-hooks", () => ({
 }));
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
-  useRunSteering: () => ({ data: undefined }),
+  useRunSteering: (runId: string | null) => ({ data: runId ? steering.value : undefined }),
   useLiveTimeline: () => ({
     data: { sessionId: "s", mayViewAllRuns: false, nextBefore: null, items: [] },
     error: null,
@@ -123,7 +125,13 @@ function type(text: string) {
 }
 
 beforeEach(() => {
+  // The configured setup (vitest.setup.ts) does not clear storage between
+  // tests -- src/test/setup.ts, which would, is not in `setupFiles` -- and
+  // jsdom keeps one localStorage per file, so a choice stored by one test
+  // would switch Web on in the next.
   window.localStorage.clear();
+  conv.liveRunIds = [];
+  steering.value = undefined;
   availability.available = true;
   settings = { provider: null, baseUrl: null, hasKey: false, source: null };
   may.manage = true;
@@ -151,6 +159,8 @@ afterEach(() => vi.restoreAllMocks());
 describe("the composer's Web switch", () => {
   it("is hidden while the tenant has no search provider", async () => {
     availability.available = false;
+    // Even with the switch left on last time: no provider, no web search.
+    window.localStorage.setItem(WEB_CHOICE_STORAGE_KEY, "1");
     mountChat();
     await waitFor(() => expect(api.get).toHaveBeenCalledWith("/chat/web-search"));
     expect(screen.queryByRole("button", { name: "Web" })).toBeNull();
@@ -250,6 +260,73 @@ describe("the composer's Web switch", () => {
   });
 });
 
+describe("a message queued behind a running answer", () => {
+  function queued(over: Record<string, unknown> = {}) {
+    return {
+      id: "q1",
+      text: "then April",
+      authorName: "Me",
+      createdAt: "",
+      consumedAt: null,
+      consumedStep: null,
+      delivery: "next_turn",
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    conv.session = {
+      ...detail(),
+      activeRuns: [{ runId: "r1", replyToId: "u1", state: "running" }],
+    };
+    conv.messages = [message("u1", "user")];
+    conv.turns = [
+      { kind: "user", key: "u1", message: message("u1", "user") },
+      { kind: "assistant", key: "answer-u1", replyToId: "u1", variants: [], liveRunId: "r1" },
+    ];
+    conv.liveRunIds = ["r1"];
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
+    window.localStorage.setItem(WEB_CHOICE_STORAGE_KEY, "1");
+  });
+
+  it('carries web: true with "Send after", never with "Steer now"', async () => {
+    const post = vi.spyOn(api, "post").mockResolvedValue(queued());
+    mountChat();
+    await screen.findByRole("button", { name: "Web" });
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "then April" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send after" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", {
+        text: "then April",
+        delivery: "next_turn",
+        web: true,
+      }),
+    );
+    fireEvent.change(box, { target: { value: "only March" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steer now" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", {
+        text: "only March",
+        delivery: "steer",
+      }),
+    );
+  });
+
+  it("shows a globe on a queued message that searches the web", () => {
+    steering.value = {
+      mayWrite: true,
+      acceptsInputs: true,
+      inputs: [queued({ web: true }), queued({ id: "q2", text: "and May" })],
+    };
+    mountChat();
+    const list = screen.getByRole("list", { name: "Queued messages" });
+    const items = within(list).getAllByRole("listitem");
+    expect(within(items[0]).getByRole("img", { name: "Searches the web" })).toBeInTheDocument();
+    expect(within(items[1]).queryByRole("img", { name: "Searches the web" })).toBeNull();
+  });
+});
+
 describe("web sources", () => {
   const source = (over: Partial<ChatSourceDTO>): ChatSourceDTO => ({
     n: 1,
@@ -263,7 +340,7 @@ describe("web sources", () => {
 
   it("render as external links with their host", () => {
     render(<Sources sources={[source({})]} highlighted={null} />);
-    const link = screen.getByRole("link", { name: "Example page" });
+    const link = screen.getByRole("link", { name: "Example page (opens in a new tab)" });
     expect(link).toHaveAttribute("href", "https://news.example.com/a/b?c=1");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
@@ -287,7 +364,9 @@ describe("web sources", () => {
 });
 
 describe("the web search setting", () => {
-  it("never shows a stored key, and saving without a new one keeps it", async () => {
+  const save = () => screen.getByRole("button", { name: "Save" });
+
+  it("never shows a stored key, and saves a changed form without it", async () => {
     settings = { provider: "brave", baseUrl: null, hasKey: true, source: "tenant" };
     const put = vi.spyOn(api, "put").mockImplementation(async () => settings);
     wrap(<WebSearchSetting />);
@@ -295,15 +374,19 @@ describe("the web search setting", () => {
     expect(key).toHaveValue("");
     expect(key).toHaveAttribute("type", "password");
     expect(key).toHaveAttribute("placeholder", "saved");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(put).toHaveBeenCalledWith("/settings/web-search", { provider: "brave" }),
-    );
+    const select = screen.getByLabelText("Provider");
+    await waitFor(() => expect(select).toBeEnabled());
+    // Nothing changed: nothing to save.
+    expect(save()).toBeDisabled();
+    fireEvent.change(select, { target: { value: "tavily" } });
+    fireEvent.change(select, { target: { value: "brave" } });
+    expect(save()).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "  " } });
+    expect(save()).toBeDisabled();
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("sends a new key once, then shows it as saved", async () => {
-    settings = { provider: null, baseUrl: null, hasKey: false, source: null };
     const put = vi.spyOn(api, "put").mockImplementation(async () => {
       settings = { provider: "tavily", baseUrl: null, hasKey: true, source: "tenant" };
       return settings;
@@ -311,12 +394,11 @@ describe("the web search setting", () => {
     wrap(<WebSearchSetting />);
     const select = await screen.findByLabelText("Provider");
     await waitFor(() => expect(select).toBeEnabled());
-    expect(select).toHaveValue("off");
     fireEvent.change(select, { target: { value: "tavily" } });
     const key = screen.getByLabelText("API key");
     expect(key).toHaveAttribute("placeholder", "");
     fireEvent.change(key, { target: { value: "tvly-secret" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(save());
     await waitFor(() =>
       expect(put).toHaveBeenCalledWith("/settings/web-search", {
         provider: "tavily",
@@ -325,6 +407,7 @@ describe("the web search setting", () => {
     );
     await waitFor(() => expect(screen.getByLabelText("API key")).toHaveValue(""));
     expect(screen.getByLabelText("API key")).toHaveAttribute("placeholder", "saved");
+    expect(save()).toBeDisabled();
   });
 
   it("asks SearXNG for its address", async () => {
@@ -341,7 +424,7 @@ describe("the web search setting", () => {
     fireEvent.change(screen.getByLabelText("SearXNG address"), {
       target: { value: " https://search.example.org " },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(save());
     await waitFor(() =>
       expect(put).toHaveBeenCalledWith("/settings/web-search", {
         provider: "searxng",
@@ -350,7 +433,19 @@ describe("the web search setting", () => {
     );
   });
 
-  it("says when the platform provides search", async () => {
+  it("with nothing set up, says so and never saves it as off", async () => {
+    const put = vi.spyOn(api, "put");
+    wrap(<WebSearchSetting />);
+    const select = await screen.findByLabelText("Provider");
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue("default");
+    expect(screen.getByRole("option", { name: "Not set up" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Platform default" })).toBeNull();
+    expect(save()).toBeDisabled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("shows the platform's search as the platform default, not as an empty SearXNG", async () => {
     settings = { provider: "searxng", baseUrl: null, hasKey: false, source: "platform" };
     wrap(<WebSearchSetting />);
     expect(
@@ -358,6 +453,68 @@ describe("the web search setting", () => {
         "Provided by your oc8 platform. Choose a provider to override, or switch it off.",
       ),
     ).toBeInTheDocument();
+    const select = screen.getByLabelText("Provider");
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue("default");
+    expect(screen.getByRole("option", { name: "Platform default" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("SearXNG address")).toBeNull();
+    expect(save()).toBeDisabled();
+  });
+
+  it("goes back to the platform default with provider: null", async () => {
+    settings = { provider: "brave", baseUrl: null, hasKey: true, source: "tenant" };
+    const put = vi.spyOn(api, "put").mockImplementation(async () => {
+      settings = { provider: "searxng", baseUrl: null, hasKey: false, source: "platform" };
+      return settings;
+    });
+    wrap(<WebSearchSetting />);
+    const select = await screen.findByLabelText("Provider");
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue("brave");
+    expect(screen.queryByText("The saved key will be removed.")).toBeNull();
+    fireEvent.change(select, { target: { value: "default" } });
+    // Leaving a keyed provider drops its key: say so before saving.
+    expect(screen.getByText("The saved key will be removed.")).toBeInTheDocument();
+    fireEvent.click(save());
+    await waitFor(() =>
+      expect(put).toHaveBeenCalledWith("/settings/web-search", { provider: null }),
+    );
+  });
+
+  it("keeps a tenant's own off as off", async () => {
+    settings = { provider: "off", baseUrl: null, hasKey: false, source: null };
+    wrap(<WebSearchSetting />);
+    const select = await screen.findByLabelText("Provider");
+    await waitFor(() => expect(select).toHaveValue("off"));
+  });
+
+  it("does not overwrite an edit in progress when the setting is fetched again", async () => {
+    settings = {
+      provider: "searxng",
+      baseUrl: "https://a.example",
+      hasKey: false,
+      source: "tenant",
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <WebSearchSetting />
+      </QueryClientProvider>,
+    );
+    const address = await screen.findByLabelText("SearXNG address");
+    await waitFor(() => expect(address).toHaveValue("https://a.example"));
+    const refetched = async (baseUrl: string) =>
+      act(async () => {
+        qc.setQueryData(["settings", "web-search"], { ...settings, baseUrl });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    // Untouched, the form follows the server.
+    await refetched("https://a2.example");
+    expect(screen.getByLabelText("SearXNG address")).toHaveValue("https://a2.example");
+    // Being edited, it keeps the edit.
+    fireEvent.change(address, { target: { value: "https://b.example" } });
+    await refetched("https://c.example");
+    expect(screen.getByLabelText("SearXNG address")).toHaveValue("https://b.example");
   });
 
   it("is read-only without settings:manage", async () => {
@@ -366,7 +523,7 @@ describe("the web search setting", () => {
     wrap(<WebSearchSetting />);
     expect(await screen.findByLabelText("API key")).toBeDisabled();
     expect(screen.getByLabelText("Provider")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(save()).toBeDisabled();
   });
 
   it("words a refused save", async () => {
@@ -376,7 +533,7 @@ describe("the web search setting", () => {
     const select = await screen.findByLabelText("Provider");
     await waitFor(() => expect(select).toBeEnabled());
     fireEvent.change(select, { target: { value: "brave" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(save());
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("This provider needs an API key."),
     );

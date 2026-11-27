@@ -2,7 +2,7 @@
 // line while a visible run is active, the inputs written to a run with what
 // became of each, and the words for a refused input.
 import { useState, type ReactNode } from "react";
-import { CornerDownRight } from "lucide-react";
+import { CornerDownRight, Globe } from "lucide-react";
 
 import { ApiError } from "@/lib/api";
 import {
@@ -202,7 +202,17 @@ function QueuedInputs({ runId, inputs }: { runId: string; inputs: RunInputDTO[] 
               <p className="whitespace-pre-wrap break-words">{input.text}</p>
             )}
             <div className="flex flex-wrap items-center gap-1">
-              <p className="mr-auto text-xs text-muted-foreground" aria-live="polite">
+              <p
+                className="mr-auto inline-flex items-center gap-1 text-xs text-muted-foreground"
+                aria-live="polite"
+              >
+                {input.web && (
+                  <Globe
+                    className="size-3"
+                    role="img"
+                    aria-label={t("Searches the web", "Sucht im Web")}
+                  />
+                )}
                 {t("Sent when the answer is done", "Wird gesendet, wenn die Antwort fertig ist")}
               </p>
               {editing?.id === input.id ? (

@@ -14,7 +14,36 @@ import {
   useUpdateWebSearchSettings,
   useWebSearchSettings,
   type WebSearchProvider,
+  type WebSearchSettingsDTO,
 } from "@/lib/web-search";
+
+/** "default": no setting of the tenant's own (`provider: null`), so the
+ *  platform's provider applies, or none at all. Never the same as "off". */
+type Choice = WebSearchProvider | "default";
+
+interface Form {
+  choice: Choice;
+  baseUrl: string;
+  apiKey: string;
+}
+
+function formOf(data: WebSearchSettingsDTO): Form {
+  // A tenant's own "off" comes back with no source: it is still its own.
+  const own = data.source === "tenant" || data.provider === "off";
+  return {
+    choice: own && data.provider ? data.provider : "default",
+    baseUrl: data.baseUrl ?? "",
+    apiKey: "",
+  };
+}
+
+function changed(form: Form, from: Form): boolean {
+  return (
+    form.choice !== from.choice ||
+    (form.choice === "searxng" && form.baseUrl.trim() !== from.baseUrl) ||
+    form.apiKey.trim() !== ""
+  );
+}
 
 const FIELD =
   "mt-1 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm text-foreground disabled:opacity-60";
@@ -25,37 +54,42 @@ export function WebSearchSetting() {
   const canManage = may("settings:manage");
   const { data } = useWebSearchSettings();
   const update = useUpdateWebSearchSettings();
-  const [provider, setProvider] = useState<WebSearchProvider>("off");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-
-  // The form starts from what the server says, and again after each save.
-  const [seen, setSeen] = useState<typeof data>(undefined);
+  const [form, setForm] = useState<Form>({ choice: "default", baseUrl: "", apiKey: "" });
+  // The form starts from what the server says, and follows it while nobody
+  // is editing: a refetch never overwrites a change in progress.
+  const [seen, setSeen] = useState<WebSearchSettingsDTO | undefined>(undefined);
+  const initial = seen ? formOf(seen) : null;
+  const dirty = !!initial && changed(form, initial);
   if (data && data !== seen) {
     setSeen(data);
-    setProvider(data.provider ?? "off");
-    setBaseUrl(data.baseUrl ?? "");
-    setApiKey("");
+    if (!dirty) setForm(formOf(data));
   }
+  const set = (patch: Partial<Form>) => setForm((prev) => ({ ...prev, ...patch }));
 
-  const keyed = provider === "brave" || provider === "tavily";
+  const { choice, baseUrl, apiKey } = form;
+  const keyed = choice === "brave" || choice === "tavily";
   // A stored key belongs to the tenant's own provider; another one needs its own.
-  const keySaved = !!data?.hasKey && data.source === "tenant" && data.provider === provider;
+  const keySaved = !!data?.hasKey && data.source === "tenant" && data.provider === choice;
+  // Any provider without a key drops the stored one (and so does the default).
+  const keyDropped = !!data?.hasKey && !keyed;
+  const nothingSetUp = !!data && data.provider === null;
 
   async function save() {
     const key = apiKey.trim();
     try {
-      await update.mutateAsync({
-        provider,
-        ...(provider === "searxng" && { baseUrl: baseUrl.trim() }),
+      const saved = await update.mutateAsync({
+        provider: choice === "default" ? null : choice,
+        ...(choice === "searxng" && { baseUrl: baseUrl.trim() }),
         ...(keyed && key && { apiKey: key }),
       });
+      setSeen(saved);
+      setForm(formOf(saved));
       toast.success(t("Web search saved", "Websuche gespeichert"));
     } catch (error) {
       toast.error(
         !(error instanceof ApiError && error.status === 422)
           ? t("Could not save web search.", "Websuche konnte nicht gespeichert werden.")
-          : provider === "searxng"
+          : choice === "searxng"
             ? t(
                 "Enter the SearXNG address, starting with http:// or https://, without a login in it.",
                 "Gib die SearXNG-Adresse ein, beginnend mit http:// oder https://, ohne Zugangsdaten darin.",
@@ -93,18 +127,23 @@ export function WebSearchSetting() {
         <label className="block text-xs text-muted-foreground">
           {t("Provider", "Anbieter")}
           <select
-            value={provider}
+            value={choice}
             disabled={!canManage || !data}
-            onChange={(event) => setProvider(event.target.value as WebSearchProvider)}
+            onChange={(event) => set({ choice: event.target.value as Choice })}
             className={FIELD}
           >
+            <option value="default">
+              {nothingSetUp
+                ? t("Not set up", "Nicht eingerichtet")
+                : t("Platform default", "Plattform-Standard")}
+            </option>
             <option value="off">{t("Off", "Aus")}</option>
             <option value="searxng">SearXNG</option>
             <option value="brave">Brave</option>
             <option value="tavily">Tavily</option>
           </select>
         </label>
-        {provider === "searxng" && (
+        {choice === "searxng" && (
           <label className="block text-xs text-muted-foreground">
             {t("SearXNG address", "SearXNG-Adresse")}
             <input
@@ -112,7 +151,7 @@ export function WebSearchSetting() {
               value={baseUrl}
               disabled={!canManage}
               placeholder="https://search.example.org"
-              onChange={(event) => setBaseUrl(event.target.value)}
+              onChange={(event) => set({ baseUrl: event.target.value })}
               className={FIELD}
             />
           </label>
@@ -126,15 +165,20 @@ export function WebSearchSetting() {
               value={apiKey}
               disabled={!canManage}
               placeholder={keySaved ? t("saved", "gespeichert") : ""}
-              onChange={(event) => setApiKey(event.target.value)}
+              onChange={(event) => set({ apiKey: event.target.value })}
               className={FIELD}
             />
           </label>
         )}
+        {keyDropped && dirty && (
+          <p className="text-xs text-muted-foreground">
+            {t("The saved key will be removed.", "Der gespeicherte Schlüssel wird entfernt.")}
+          </p>
+        )}
         <button
           type="button"
           onClick={() => void save()}
-          disabled={!canManage || !data || update.isPending}
+          disabled={!canManage || !data || !dirty || update.isPending}
           className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
         >
           {update.isPending ? (

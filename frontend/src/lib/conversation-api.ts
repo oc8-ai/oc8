@@ -598,6 +598,9 @@ export interface RunInputDTO {
   /** `steer`: read at the run's next step. `next_turn`: queued, it becomes
    *  the chat's next message when the answer is done (spec §5.5). */
   delivery: RunInputDelivery;
+  /** A queued message that searches the web once it is the chat's turn.
+   *  Absent on an older backend. */
+  web?: boolean;
 }
 
 export type RunInputDelivery = "steer" | "next_turn";
@@ -722,10 +725,21 @@ export function withRunInput(
 export function useSendRunInput(runId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ text, delivery }: { text: string; delivery: RunInputDelivery }) =>
+    // `web` only goes with a `next_turn`: a steer joins a run already
+    // under way, whose tools are set.
+    mutationFn: ({
+      text,
+      delivery,
+      web = false,
+    }: {
+      text: string;
+      delivery: RunInputDelivery;
+      web?: boolean;
+    }) =>
       api.post<RunInputDTO>(`/runs/${encodeURIComponent(runId ?? "")}/inputs`, {
         text,
         delivery,
+        ...(web && delivery === "next_turn" && { web: true }),
       }),
     onSuccess: (input) =>
       qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) => withRunInput(prev, input)),

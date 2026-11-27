@@ -1,7 +1,15 @@
 // frontend/src/components/conversation/conversation.tsx
 // The one chat (spec §2.1). Every surface mounts this; only spacing differs
 // between "full" (Copilot page, Live tab) and "compact" (dock, My Work).
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, BookOpen, Bot, CornerDownRight, Database, X } from "lucide-react";
 
@@ -52,6 +60,7 @@ import { cn } from "@/lib/utils";
 import { SidePanelProvider } from "@/edition/slots";
 import { ArtifactPanel } from "./artifacts/artifact-panel";
 import { ArtifactsContext, useArtifactsPanel, usePanelAsSheet } from "./artifacts/context";
+import { PythonRunContext, usePythonScopeFor } from "./python/run-context";
 import { AssistantTurn } from "./assistant-turn";
 import { Composer, type ComposerSubmit, type PlusMenuItem } from "./composer";
 import { ContextSearchDialog } from "./context-search";
@@ -287,6 +296,9 @@ function ConversationBody(props: ConversationProps) {
   const { lang } = useLang();
   const conv = useConversation(props.sessionId);
   const artifacts = useArtifactsPanel(props.sessionId, conv.turns);
+  // "Send result to chat" under a Python run goes through `sendText` below.
+  const sendTextRef = useRef<(text: string) => void>(() => undefined);
+  const sendResult = useCallback((text: string) => sendTextRef.current(text), []);
   const [outbox, setOutbox] = useState<Outbox | null>(null);
   // Stored message id -> the outbox id its turn was first shown under.
   const [aliases, setAliases] = useState<Record<string, string>>({});
@@ -448,6 +460,7 @@ function ConversationBody(props: ConversationProps) {
     return () => el.removeEventListener("scroll", onScroll);
   }, [ref]);
   const readOnly = !!conv.session?.readOnly;
+  const python = usePythonScopeFor(conv.turns, readOnly ? null : sendResult);
   // The question the chat's run is parked on (spec §4.1). That run waits for
   // the reader, so it does not make the chat busy: the composer answers it.
   const pending = (!readOnly && conv.session?.pendingQuestion) || null;
@@ -824,7 +837,7 @@ function ConversationBody(props: ConversationProps) {
     setSendError(null);
     setDraft("");
     try {
-      await sendReplyInput.mutateAsync({ text: submit.text, delivery: "next_turn" });
+      await sendReplyInput.mutateAsync({ text: submit.text, delivery: "next_turn", web });
     } catch (error) {
       // The answer ended meanwhile: the message simply goes out now.
       if (error instanceof ApiError && error.status === 409 && /finished/.test(error.message)) {
@@ -1195,6 +1208,7 @@ function ConversationBody(props: ConversationProps) {
     if (busy) return;
     void onSend({ text, attachmentIds: [], contextRefs: [] }, false);
   };
+  sendTextRef.current = sendText;
   const empty =
     typeof props.emptyState === "function" ? props.emptyState(sendText) : props.emptyState;
   const full = props.variant === "full";
@@ -1469,17 +1483,19 @@ function ConversationBody(props: ConversationProps) {
   );
   return (
     <ArtifactsContext.Provider value={artifacts.context}>
-      <div className="flex min-h-0 min-w-0 flex-1">
-        {chat}
-        <ArtifactPanel
-          artifact={artifacts.current}
-          versions={artifacts.versions}
-          mode={artifacts.mode}
-          onSelect={artifacts.open}
-          onClose={artifacts.close}
-          asSheet={panelAsSheet}
-        />
-      </div>
+      <PythonRunContext.Provider value={python}>
+        <div className="flex min-h-0 min-w-0 flex-1">
+          {chat}
+          <ArtifactPanel
+            artifact={artifacts.current}
+            versions={artifacts.versions}
+            mode={artifacts.mode}
+            onSelect={artifacts.open}
+            onClose={artifacts.close}
+            asSheet={panelAsSheet}
+          />
+        </div>
+      </PythonRunContext.Provider>
     </ArtifactsContext.Provider>
   );
 }

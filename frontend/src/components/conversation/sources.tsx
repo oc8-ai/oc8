@@ -61,7 +61,10 @@ export function Sources({
                   rel="noopener noreferrer"
                   className="text-foreground hover:underline"
                 >
-                  {s.title}
+                  {s.title}{" "}
+                  <span className="sr-only">
+                    {t("(opens in a new tab)", "(öffnet in neuem Tab)")}
+                  </span>
                   {s.kind === "web" && (
                     <ExternalLink
                       className="ml-1 inline size-3 align-baseline text-muted-foreground"
