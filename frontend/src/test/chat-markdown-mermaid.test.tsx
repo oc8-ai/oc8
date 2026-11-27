@@ -126,4 +126,34 @@ describe("renderMermaidToSvg", () => {
     mermaid.parse.mockRejectedValueOnce(new Error("bad"));
     await expect(renderMermaidToSvg("nope")).rejects.toThrow("bad");
   });
+
+  it("gives the SVG its natural size, so a small diagram is not stretched", async () => {
+    // Mermaid writes width="100%": as an <img> that has no natural width, and
+    // a 104 px diagram filled the whole answer.
+    mermaid.render.mockResolvedValueOnce({
+      svg:
+        '<svg id="d" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 104.5px;"' +
+        ' viewBox="-8 -8 104.5 190"><text>A</text><svg width="100%"></svg></svg>',
+    });
+    const svg = await renderMermaidToSvg("graph TD\n  A-->B");
+    expect(svg).toMatch(/^<svg id="d" width="104.5" height="190" xmlns=/);
+    // Only the root element changes.
+    expect(svg).toContain('<svg width="100%"></svg>');
+  });
+
+  it("leaves an SVG without a viewBox as it is", async () => {
+    const svg = await renderMermaidToSvg("graph TD\n  A-->B");
+    expect(svg).toBe('<svg xmlns="http://www.w3.org/2000/svg"><text>A</text></svg>');
+  });
+});
+
+describe("MermaidBlock image", () => {
+  it("shows the diagram at its natural size, scaled down only to fit", async () => {
+    render(<ChatMarkdown text={CLOSED} />);
+    const img = await screen.findByRole("img", { name: "Diagram" });
+    for (const name of ["max-w-full", "h-auto", "w-auto", "mx-auto"]) {
+      expect(img.classList.contains(name), name).toBe(true);
+    }
+    expect(img.classList.contains("w-full")).toBe(false);
+  });
 });

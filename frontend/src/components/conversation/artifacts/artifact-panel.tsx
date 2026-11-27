@@ -98,7 +98,7 @@ function MermaidPreview({ source }: { source: string }) {
     <img
       src={svgDataUrl(current.svg)}
       alt={t("Diagram", "Diagramm")}
-      className="mx-auto max-w-full p-4"
+      className="mx-auto block h-auto w-auto max-w-full p-4"
     />
   );
 }

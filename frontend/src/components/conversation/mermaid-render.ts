@@ -48,10 +48,24 @@ export function renderMermaidToSvg(source: string): Promise<string> {
     await mermaid.parse(source);
     drawn += 1;
     const { svg } = await mermaid.render(`oc8-mermaid-${drawn}`, source);
-    return svg;
+    return withNaturalSize(svg);
   });
   queue = run.catch(() => undefined);
   return run;
+}
+
+/** Mermaid's root `<svg>` says `width="100%"` (its real width only in a
+ *  `max-width` style), which as an <img> has no natural width: a small
+ *  diagram then fills its container. Size the root element from its viewBox
+ *  instead, so the image has its natural size and CSS only scales it down. */
+function withNaturalSize(svg: string): string {
+  const root = /^<svg\b[^>]*>/.exec(svg)?.[0];
+  const box = root && /\sviewBox="[-\d.e]+[\s,]+[-\d.e]+[\s,]+([\d.e]+)[\s,]+([\d.e]+)"/.exec(root);
+  if (!root || !box || !/\swidth="100%"/.test(root)) return svg;
+  const sized = root
+    .replace(/\sheight="[^"]*"/, "")
+    .replace(/\swidth="100%"/, ` width="${box[1]}" height="${box[2]}"`);
+  return sized + svg.slice(root.length);
 }
 
 /** An SVG as an <img> source. */

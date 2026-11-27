@@ -127,7 +127,7 @@ export function MermaidBlock({
           <img
             src={svgDataUrl(svg)}
             alt={t("Diagram", "Diagramm")}
-            className="mx-auto max-w-full"
+            className="mx-auto block h-auto w-auto max-w-full"
           />
         </div>
       ) : (
