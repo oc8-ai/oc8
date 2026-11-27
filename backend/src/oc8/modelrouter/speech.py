@@ -20,6 +20,13 @@ counts them. Rows are append-only: a call first reserves its estimate as a
 usage row (`_reserve`), and dictation appends what the provider reports beyond
 it (and its tokens); nothing is refunded. Audio is never stored.
 
+Residual risk, accepted: for dictation the allowance bounds upload BYTES per
+day (cap minutes x 16 kbit/s); real audio time can exceed it by the ratio
+16 kbit/s : actual bitrate -- about 2.7x for constant low-bitrate Opus, up to
+~50x for mostly silent VBR/DTX audio. Admins can lower the daily cap or switch
+dictation off (0). A provider-reported duration far above the reservation is
+audited (`chat.audio.allowance_overshoot`, `OVERSHOOT_FACTOR`).
+
 Speech costs show 0 until pricing reads platform units, so the budgets that
 sum tokens do not see it; what bounds the spend is the per-member daily
 allowance (`_reserve`): minutes of dictation and characters read
@@ -30,7 +37,6 @@ speech settings (0 switches the feature off for members).
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import io
 import logging
 import math
@@ -82,11 +88,15 @@ DEFAULT_DAILY_LIMIT: Final = {SPEECH_TO_TEXT: 60, TEXT_TO_SPEECH: 200_000}
 #: The setting's unit -> the platform units a usage row holds (seconds, characters).
 _UNITS_PER: Final = {SPEECH_TO_TEXT: 60, TEXT_TO_SPEECH: 1}
 
-#: A recording's length by its size, at 16 kbit/s: conservative, so a
-#: low-bitrate recording cannot pass for a short one (a 12 MB upload counts as
+#: A recording's length by its size, at 16 kbit/s (a 12 MB upload counts as
 #: about 100 minutes). The chat records at this rate, so for it the estimate
-#: is about the truth; a higher-bitrate upload counts longer than it is.
+#: is about the truth; a higher-bitrate upload counts longer than it is. It
+#: is not a bound on real audio time: a lower bitrate -- constant low-bitrate
+#: Opus (~2.7x) or mostly silent VBR/DTX audio (up to ~50x) -- holds more
+#: seconds per byte, so the allowance bounds upload bytes, not minutes.
 _ESTIMATED_BYTES_PER_SECOND: Final = 2_000
+#: A reported duration this many times the reservation is audited.
+OVERSHOOT_FACTOR: Final = 10
 
 
 def capability_of(cfg: m.ModelConfig | None) -> str:
@@ -159,6 +169,14 @@ class SpeechText:
     provider: str
     model: str
     usage: Usage | None
+    #: The seconds reserved for the call (the upload at 16 kbit/s).
+    reserved_seconds: int = 0
+
+    @property
+    def overshoots(self) -> bool:
+        """The provider reported far more audio than the upload's size
+        suggested: very low-bitrate or mostly silent audio (audited)."""
+        return self.seconds > OVERSHOOT_FACTOR * self.reserved_seconds
 
 
 @dataclass
@@ -241,12 +259,10 @@ async def used_today(
     return int(total or 0)
 
 
-def _lock_key(tenant_id: uuid.UUID, member_id: uuid.UUID, capability: str) -> int:
-    """A signed 64-bit advisory-lock key for one member's allowance of one kind."""
-    digest = hashlib.blake2b(
-        f"oc8:speech:{tenant_id}:{member_id}:{capability}".encode(), digest_size=8
-    ).digest()
-    return int.from_bytes(digest, "big", signed=True)
+def _lock_key(tenant_id: uuid.UUID, member_id: uuid.UUID, capability: str) -> str:
+    """The advisory-lock key for one member's allowance of one kind, hashed in
+    SQL with `hashtextextended(key, 0)` like the repo's other locks."""
+    return f"speech:{tenant_id}:{member_id}:{capability}"
 
 
 async def _reserve(
@@ -283,7 +299,11 @@ async def _reserve(
                     f"{what} is switched off for members of this organization"
                 )
             await own.execute(
-                select(func.pg_advisory_xact_lock(_lock_key(tenant_id, member_id, capability)))
+                select(
+                    func.pg_advisory_xact_lock(
+                        func.hashtextextended(_lock_key(tenant_id, member_id, capability), 0)
+                    )
+                )
             )
             used = await used_today(
                 own, tenant_id=tenant_id, member_id=member_id, capability=capability
@@ -426,7 +446,12 @@ async def transcribe(
     Counted so it never undercounts: the upload's size at 16 kbit/s is
     reserved before the call; when the provider reports more seconds, the
     difference is appended after it. A provider reporting fewer seconds
-    refunds nothing, so a recording above 16 kbit/s counts by its size."""
+    refunds nothing, so a recording above 16 kbit/s counts by its size.
+    Residual risk: the allowance bounds upload BYTES per day (cap minutes x
+    16 kbit/s); real audio time can exceed it by the ratio 16 kbit/s : actual
+    bitrate -- about 2.7x for constant low-bitrate Opus, up to ~50x for mostly
+    silent VBR/DTX audio. Admins can lower the daily cap or switch dictation
+    off (0)."""
     cfg = await _model_for(db, tenant_id=tenant_id, capability=SPEECH_TO_TEXT)
     provider, adapter = await _admit(db, tenant_id=tenant_id, cfg=cfg, department_id=department_id)
     reserved = estimated_seconds(_size(audio))
@@ -463,6 +488,7 @@ async def transcribe(
         provider=provider,
         model=cfg.model,
         usage=result.usage,
+        reserved_seconds=reserved,
     )
 
 

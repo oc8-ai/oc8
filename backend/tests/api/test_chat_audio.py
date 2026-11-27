@@ -1209,3 +1209,50 @@ async def test_an_oversized_answer_is_refused_before_its_markdown_is_read(
         )
     assert r.status_code == 409, r.text
     assert provider == []
+
+
+async def test_a_duration_far_above_the_reservation_is_audited(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mostly silent VBR audio holds far more seconds per byte than the
+    reservation assumes: the overshoot is audited for an admin to see."""
+    real_send = httpx.AsyncClient.send
+    duration = {"seconds": 5.0}
+
+    async def send(client: Any, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        if request.url.host != "speech.example":
+            return await real_send(client, request, **kwargs)
+        await request.aread()
+        return httpx.Response(
+            200, json={"text": _SECRET_WORDS, "duration": duration["seconds"]}, request=request
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        h = _headers(w.tenant, "owner", "member")
+        # 1 second reserved (404 bytes): 5 s is within 10x, 50 s is not.
+        for seconds in (5.0, 50.0):
+            duration["seconds"] = seconds
+            r = await http.post(
+                "/api/v1/chat/audio/transcribe", headers=h, **_upload(session_id=str(session_id))
+            )
+            assert r.status_code == 200, r.text
+    async with app_session(w.tenant) as db:
+        events = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(
+                        m.AuditEvent.action == "chat.audio.allowance_overshoot"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    [event] = events
+    assert event.resource["agent_id"] == str(w.personal_agent)
+    assert event.resource["reserved_seconds"] == 1
+    assert event.resource["reported_seconds"] == pytest.approx(50.0)
+    assert _SECRET_WORDS not in str(event.resource)

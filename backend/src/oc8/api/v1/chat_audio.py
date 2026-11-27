@@ -63,8 +63,8 @@ _ChatActor = Annotated[
     HumanActor, Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE))
 ]
 
-#: Below OpenAI's 25 MB: 12 MB counts as about 100 minutes at the 16 kbit/s
-#: the allowance assumes when the provider reports no duration.
+#: Below OpenAI's 25 MB: 12 MB reserves about 100 minutes at the 16 kbit/s
+#: the allowance assumes (it bounds upload bytes; see `oc8.modelrouter.speech`).
 MAX_AUDIO_BYTES = 12 * 1024 * 1024
 #: The multipart envelope around the audio: boundaries, headers, two fields.
 _MAX_ENVELOPE_BYTES = 64 * 1024
@@ -352,6 +352,28 @@ async def transcribe_audio(request: Request, db: DbSession, actor: _ChatActor) -
         },
         principal=actor.principal,
     )
+    if result.overshoots:
+        # The allowance bounds upload bytes, not minutes: very low-bitrate or
+        # mostly silent audio holds far more time than it reserved. Not
+        # stopped (an accepted residual), but shown to an admin.
+        await append_event(
+            db,
+            tenant_id=actor.principal.tenant_id,
+            actor_type="operator",
+            actor_id=actor.member.id,
+            category="chat",
+            action="chat.audio.allowance_overshoot",
+            resource={
+                "session_id": str(session.id),
+                "chat_session_id": str(session.id),
+                "agent_id": str(session.agent_id),
+                "department_id": str(agent.department_id) if agent is not None else None,
+                "model": result.model,
+                "reserved_seconds": result.reserved_seconds,
+                "reported_seconds": result.seconds,
+            },
+            principal=actor.principal,
+        )
     await db.commit()
     return Transcription(text=result.text)
 
