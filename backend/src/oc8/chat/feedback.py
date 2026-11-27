@@ -14,6 +14,12 @@ async def answer_model(
 ) -> str | None:
     """The model that wrote `answer`, for counting its rating.
 
+    The executor records the model a leg ended on in the run context
+    (`runtime/executor._leg_model`): exact, Auto routing included. A run
+    without that key (an isolated or external runtime, or one that ran before
+    the key existed) falls back to the usage window below, which is a
+    heuristic -- a parallel run of the same agent can win it.
+
     A usage record names no run, so the answering run's completions are its
     agent's usage records for the chat's member between the run's creation
     and the answer's: the routed model of an Auto answer, the model the
@@ -25,6 +31,9 @@ async def answer_model(
     chat's current model stands in."""
     run = await db.get(m.AgentRun, answer.run_id) if answer.run_id is not None else None
     if run is not None and run.tenant_id == session.tenant_id:
+        ended_on = (run.context or {}).get("model")
+        if isinstance(ended_on, str) and ended_on:
+            return ended_on
         usage = m.TokenUsageRecord
         model = await db.scalar(
             select(usage.model)

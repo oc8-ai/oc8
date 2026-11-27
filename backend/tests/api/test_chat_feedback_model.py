@@ -25,6 +25,8 @@ async def _answered_chat(
     tenant: uuid.UUID,
     agent: uuid.UUID,
     usage: list[tuple[str, int]],
+    *,
+    run_model: str | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID]:
     """A chat of `admin` whose answer came from a run that recorded `usage`
     (model, output tokens) -- each step in its own transaction, as a run's
@@ -36,7 +38,12 @@ async def _answered_chat(
             )
         ).scalar_one()
         session = m.ChatSession(tenant_id=tenant, agent_id=agent, member_id=member)
-        run = m.AgentRun(tenant_id=tenant, agent_id=agent, state="done")
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent,
+            state="done",
+            context={"model": run_model} if run_model else {},
+        )
         db.add_all([session, run])
         await db.flush()
         ids = (session.id, run.id, member)
@@ -117,3 +124,20 @@ async def test_without_usage_the_chats_model_stands_in(app_session: AppSessionFa
     chat = await _answered_chat(app_session, w.tenant, w.standard_agent, [])
     await _switch_model(app_session, w.tenant, chat[0])
     assert await _rated_model(app_session, w.tenant, chat) == "switched-later"
+
+
+async def test_the_model_the_run_ended_on_wins_over_other_usage_in_its_window(
+    app_session: AppSessionFactory,
+) -> None:
+    """The executor records the model a leg ended on in the run context. That
+    is exact, so it beats the usage window, which a parallel run of the same
+    agent (here a longer answer on another model) can win."""
+    w = await _world(app_session)
+    chat = await _answered_chat(
+        app_session,
+        w.tenant,
+        w.standard_agent,
+        [("parallel-longer", 900), ("answered", 300)],
+        run_model="answered",
+    )
+    assert await _rated_model(app_session, w.tenant, chat) == "answered"
