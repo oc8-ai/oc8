@@ -154,8 +154,26 @@ _MENTIONS = [
     "Bitte setz mein Passwort zurück.",
     "Explain our secret handling policy.",
     "The password is required for every login.",
+    "Tokens: 5000",
+    "token budget: 10000",
+    "the secret is that…",
+    "the secret is that we ship on Fridays",
+    "token: 5000 per month",
+    "max token: 8000",
+    "token=gpt-4o",
+    "secret: none",
+    "password = required field",
+    "credential: see vault",
+    "the token is 4096 long",
+    "the password is 8 characters long",
+    "my token is 2 days old",
+    "Bearer of bad news",
+    "We sell bearer bonds.",
+    "Das Passwort ist abgelaufen.",
+    "Mein Kennwort funktioniert nicht.",
+    "Wie lange ist ein Token gültig?",
 ]
-#: A credential value the person wrote: refused, as before.
+#: A credential value the person wrote: refused (and redacted).
 _VALUES = [
     "token: abc123def456",
     "password = hunter2",
@@ -164,13 +182,47 @@ _VALUES = [
     "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig",
     "my password is hunter2",
     "Mein Token ist abc123def456",
+    # compound and snake_case keys
+    "OPENAI_API_KEY=sk-abc123",
+    "DB_PASSWORD=Sommer2024",
+    "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123",
+    "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCY",
+    "client_secret=s3cr3t-v4lue",
+    "access_token=ya29.a0AfH6SMBx",
+    "refresh_token: 1//0gLkXyZabc",
+    # JSON and quoted keys
+    '{"password": "hunter2"}',
+    "{'token': 'abc'}",
+    # Authorization headers
+    "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+    "Authorization: Token 9944b09199c62bcf",
+    # prose without a digit, other spellings
+    "my password hunter",
+    "my password Sommer!",
+    "password is: hunter2",
+    "password -> x",
+    "<password>x</password>",
+    # missed by both earlier gates
+    "pw: hunter2",
+    "PW=hunter2",
+    "Passwort: Sommer2024",
+    "Mein Passwort ist Sommer!",
+    "Das Kennwort lautet Geheim42",
+    "kennwort=geheim",
+    "api key = abcd1234efgh",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N",
+    "sk-abcdefghijklmnopqrstuvwx",
+    "sk-ant-api03-abcdefghijklmnopqrst",
+    "ghp_abcdefghijklmnopqrstuvwxyz0123",
+    "github_pat_11ABCDEFG0123456789_abcdefghij",
+    "AKIAIOSFODNN7EXAMPLE",
+    "xoxb-1234567890-abcdefghij",
+    "glpat-abcdefghijklmnopqrst",
+    "AIzaSyA-abcdefghijklmnopqrstuvwxyz012345",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "-----BEGIN PRIVATE KEY-----",
+    "connect to postgres://admin:hunter2@db.example.com/app",
 ]
-
-
-def test_a_value_written_as_a_sentence_is_redacted() -> None:
-    from oc8.copilot.redaction import redact_text
-
-    assert redact_text("my password is hunter2, thanks") == "my password is [redacted], thanks"
 
 
 @pytest.mark.parametrize("message", _MENTIONS)
