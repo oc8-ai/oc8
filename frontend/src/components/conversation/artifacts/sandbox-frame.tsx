@@ -20,7 +20,7 @@ import { RotateCcw } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-import { buildSandboxSrcdoc } from "./sandbox-srcdoc";
+import { buildSandbox } from "./sandbox-srcdoc";
 
 export function SandboxFrame({
   html,
@@ -35,17 +35,16 @@ export function SandboxFrame({
   onMessage?: (data: unknown) => void;
   /** See `sandboxCsp`. */
   extraCsp?: string;
-  /** False: a static page -- `sandbox=""` and `script-src 'none'`. */
+  /** False: a static page -- `sandbox=""` and `script-src 'none'`. A page
+   *  `sanitizePage` cannot settle is static too, with a note saying so. */
   scripts?: boolean;
   title?: string;
   className?: string;
 }) {
   const t = useT();
   const frame = useRef<HTMLIFrameElement>(null);
-  const srcdoc = useMemo(
-    () => buildSandboxSrcdoc(html, extraCsp, { scripts }),
-    [html, extraCsp, scripts],
-  );
+  const built = useMemo(() => buildSandbox(html, extraCsp, { scripts }), [html, extraCsp, scripts]);
+  const srcdoc = built.srcdoc;
   // The document the frame has loaded once; a second load of it is a
   // navigation away from it.
   const loaded = useRef<string | null>(null);
@@ -96,12 +95,12 @@ export function SandboxFrame({
     );
   }
 
-  return (
+  const iframe = (
     <iframe
       key={attempt}
       ref={frame}
       title={title ?? t("Preview", "Vorschau")}
-      sandbox={scripts ? "allow-scripts" : ""}
+      sandbox={built.scripts ? "allow-scripts" : ""}
       srcDoc={srcdoc}
       referrerPolicy="no-referrer"
       onLoad={() => {
@@ -111,7 +110,22 @@ export function SandboxFrame({
       // A page draws on the browser's default canvas, as it would opened on
       // its own -- not on the chat's (dark) background.
       style={{ colorScheme: "light", backgroundColor: "Canvas" }}
-      className={cn("block border-0", className)}
+      className={cn(
+        "block border-0",
+        built.unstable && scripts ? "min-h-0 w-full flex-1" : className,
+      )}
     />
+  );
+  if (!(built.unstable && scripts)) return iframe;
+  return (
+    <div className={cn("flex flex-col", className)}>
+      <p role="note" className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+        {t(
+          "Shown without scripts: this page could not be read safely.",
+          "Ohne Skripte angezeigt: Diese Seite ließ sich nicht sicher lesen.",
+        )}
+      </p>
+      {iframe}
+    </div>
   );
 }

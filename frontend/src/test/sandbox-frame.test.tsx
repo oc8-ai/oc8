@@ -10,8 +10,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { SandboxFrame } from "@/components/conversation/artifacts/sandbox-frame";
 import {
+  buildSandbox,
   buildSandboxSrcdoc,
   GUARD,
+  sanitizePage,
   SANDBOX_CSP,
   sandboxCsp,
   withoutNetworkHints,
@@ -153,6 +155,60 @@ describe("withoutNetworkHints", () => {
     expect(out).toContain("<p>kept</p>");
   });
 
+  // Mutation XSS: markup whose serialisation parses back into something
+  // else. What the frame's parser reads from the output must hold no frame.
+  it.each([
+    '<math><mtext><table><mglyph><style><!--</style><img title="--><iframe srcdoc=x>">',
+    '<svg></p><style><a id="</style><iframe srcdoc=x>">',
+    "<form><math><mtext></form><form><mglyph><style></math><iframe srcdoc=x>",
+    '<svg><foreignObject><p><style><a title="</style><iframe srcdoc=x>"></a></style></p></foreignObject></svg>',
+    '<math><annotation-xml encoding="text/html"><style><img title="</style><iframe srcdoc=x>"></annotation-xml></math>',
+    "<noscript><style></noscript><iframe srcdoc=x></style>",
+  ])("leaves no frame after the frame parses it again: %s", (payload) => {
+    const { html } = sanitizePage(payload);
+    for (let i = 0; i < 3; i += 1) {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      expect(doc.querySelectorAll("iframe, foreignObject, mglyph, annotation-xml")).toHaveLength(0);
+    }
+  });
+
+  it("keeps an ordinary inline SVG chart as it is", () => {
+    const chart =
+      '<svg viewBox="0 0 100 50" role="img"><title>Sales</title><g fill="steelblue">' +
+      '<rect x="0" y="10" width="20" height="40"></rect><rect x="30" y="20" width="20" height="30"></rect></g>' +
+      '<path d="M0 50L100 0" stroke="black"></path><text x="5" y="48">Q1</text>' +
+      '<circle cx="80" cy="10" r="4"></circle></svg>';
+    const { html, stable } = sanitizePage(`<h1>Report</h1>${chart}`);
+    expect(stable).toBe(true);
+    const svg = new DOMParser().parseFromString(html, "text/html").querySelector("svg");
+    expect(svg?.querySelectorAll("rect")).toHaveLength(2);
+    expect(svg?.querySelector("path")?.getAttribute("d")).toBe("M0 50L100 0");
+    expect(svg?.querySelector("text")?.textContent).toBe("Q1");
+    expect(svg?.querySelector("circle")).not.toBeNull();
+  });
+
+  it("shows a page it cannot settle without scripts", () => {
+    const Real = DOMParser;
+    // A parser whose every round trip changes the page.
+    class Growing {
+      parseFromString(html: string, type: DOMParserSupportedType) {
+        return new Real().parseFromString(`${html}<i></i>`, type);
+      }
+    }
+    vi.stubGlobal("DOMParser", Growing);
+    try {
+      const built = buildSandbox("<p>x</p><script>1</script>");
+      expect(built).toMatchObject({ scripts: false, unstable: true });
+      expect(built.srcdoc).not.toContain(GUARD);
+      expect(built.srcdoc).toContain("script-src 'none'");
+      render(<SandboxFrame html="<p>x</p>" />);
+      expect(screen.getByTitle("Preview").getAttribute("sandbox")).toBe("");
+      expect(screen.getByRole("note")).toHaveTextContent("could not be read safely");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("is stripped in the srcdoc too", () => {
     const srcdoc = buildSandboxSrcdoc(`<meta http-equiv="refresh" content="0;url=${OUT}">`);
     expect(srcdoc).not.toContain(OUT);
@@ -191,23 +247,46 @@ describe("GUARD, run", () => {
         "t(() => document.body.append(document.adoptNode(d.body.firstChild)));" +
         "t(() => document.body.appendChild(document.adoptNode(d.querySelector('object'))));" +
         "const x = document.createElement('div'); document.body.append(x);" +
-        "x.innerHTML = '<embed src=x><iframe></iframe>';" +
+        "t(() => { x.innerHTML = '<embed src=x><iframe></iframe>'; });" +
         "window.left = document.querySelectorAll('iframe,frame,object,embed').length;</script>",
     );
-    expect(win.out).toEqual(["blocked", "ok", "blocked"]);
+    expect(win.out).toEqual(["blocked", "ok", "blocked", "blocked"]);
     // Counted in the same task, before any nested document could load.
     expect(win.left).toBe(0);
   });
 
-  it("drops a resource hint or refresh a script adds or switches on", () => {
+  it("refuses a resource hint or refresh before the browser sees it, by any attribute path", () => {
     const win = frame(
-      '<link id="l" rel="icon" href="data:,x"><script>' +
-        "document.getElementById('l').setAttribute('rel', 'preconnect');" +
+      '<link id="l" rel="icon" href="data:,x"><meta id="n" name="x" content="y"><script>' +
+        "const l = document.getElementById('l'), n = document.getElementById('n');" +
+        "const bad = { n: 0, toString() { this.n += 1; return this.n === 1 ? 'icon' : 'preconnect'; } };" +
+        "l.setAttribute('rel', 'preconnect'); l.setAttribute('rel', bad); l.rel = 'dns-prefetch';" +
+        "l.relList.add('preconnect'); l.relList.replace('icon', 'prefetch'); l.relList.value = 'preload';" +
+        "l.getAttributeNode('rel').value = 'preconnect'; l.getAttributeNode('rel').nodeValue = 'preconnect';" +
+        "l.getAttributeNode('rel').textContent = 'preconnect';" +
+        "const a = document.createAttribute('rel'); a.value = 'prerender'; l.setAttributeNode(a);" +
+        "const b = document.createAttribute('http-equiv'); b.value = 'refresh'; n.attributes.setNamedItem(b);" +
+        "n.httpEquiv = 'refresh'; n.setAttribute('http-equiv', 'Refresh');" +
+        "document.body.classList.add('preconnect');" +
         "const m = document.createElement('meta'); document.head.append(m); m.httpEquiv = 'refresh';" +
-        "const k = document.createElement('div'); k.innerHTML = '<link rel=dns-prefetch href=//x>'; document.body.append(k);" +
-        "window.left = document.querySelectorAll('link, meta[http-equiv=refresh]').length;</script>",
+        "const k = document.createElement('div'); try { k.innerHTML = '<link rel=dns-prefetch href=//x>'; } catch (e) {} document.body.append(k);" +
+        "window.rel = l.getAttribute('rel'); window.equiv = n.getAttribute('http-equiv'); window.cls = document.body.className;" +
+        "window.left = document.querySelectorAll('link[rel*=pre], meta[http-equiv*=refresh i], link[rel*=prefetch]').length;</script>",
     );
+    // Every change was refused on the spot: the elements are as they were.
+    expect(win.rel).toBe("icon");
+    expect(win.equiv).toBeNull();
+    // classList shares DOMTokenList with relList and is left alone.
+    expect(win.cls).toBe("preconnect");
     expect(win.left).toBe(0);
+  });
+
+  it("leaves no prefetch switch to rewrite into a refresh", () => {
+    const win = frame(
+      "<script>window.found = document.querySelectorAll('meta[http-equiv]').length;</script>",
+    );
+    // The CSP meta only.
+    expect(win.found).toBe(1);
   });
 
   it("removes document.write and the other ways to parse a shadow root", () => {

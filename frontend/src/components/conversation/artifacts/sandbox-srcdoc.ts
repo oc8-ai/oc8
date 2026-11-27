@@ -90,20 +90,16 @@ const HINTS = new Set([
 /** Elements that would hold a nested document (a fresh realm without GUARD). */
 const FRAMES = "iframe, frame, frameset, object, embed, portal, fencedframe";
 
-/** The page without what could open a fresh realm, navigate it, rebase it or
- *  reach a host outside the CSP: frames, `<meta http-equiv=refresh>` (and a
- *  DNS prefetch switch of its own), `<base>`, resource-hint links, and
- *  declarative shadow roots (they would hide a frame from GUARD). Also
- *  `<noscript>` and comments: parsed here with scripting off, there with it
- *  on, they are where the two parsers would read the page differently.
- *  Parsed, not matched, so attribute order and quoting do not matter; the
- *  scripts are inert while parsed. Where there is no DOMParser (server
- *  render) the page stays as it is -- the frame is only ever shown in a
- *  browser, and GUARD and the CSPs do not depend on this. */
-export function withoutNetworkHints(html: string): string {
-  if (typeof DOMParser === "undefined") return html;
+/** Where HTML and SVG/MathML parsing switch over: the elements mutation-XSS
+ *  payloads are built on. An inline SVG chart does not need them. */
+const INTEGRATION = "foreignObject, mglyph, annotation-xml";
+
+/** One pass of `withoutNetworkHints`. */
+function strip(html: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  for (const element of doc.querySelectorAll(`${FRAMES}, base, noscript`)) element.remove();
+  for (const element of doc.querySelectorAll(`${FRAMES}, base, noscript, ${INTEGRATION}`)) {
+    element.remove();
+  }
   for (const meta of doc.querySelectorAll("meta[http-equiv]")) {
     if (/refresh|dns-prefetch/i.test(meta.getAttribute("http-equiv") ?? "")) meta.remove();
   }
@@ -122,23 +118,71 @@ export function withoutNetworkHints(html: string): string {
   return doc.documentElement.outerHTML;
 }
 
-/** The srcdoc for a sandboxed frame showing `body` (a page or a fragment).
- *  `extraCsp` widens the policy for a frame that needs it (Run Python:
- *  wasm, a blob: worker), see `sandboxCsp`; GUARD runs in every frame with
- *  scripts. With `scripts: false` the frame runs none (`script-src 'none'`,
- *  and SandboxFrame drops `allow-scripts`). */
-export function buildSandboxSrcdoc(
+/** How many times the page is parsed, stripped and serialised at most. */
+const PASSES = 3;
+
+/** The page without what could open a fresh realm, navigate it, rebase it or
+ *  reach a host outside the CSP: frames, `<meta http-equiv=refresh>` (and a
+ *  DNS prefetch switch of its own), `<base>`, resource-hint links, and
+ *  declarative shadow roots (they would hide a frame from GUARD). Also
+ *  `<noscript>` and comments: parsed here with scripting off, there with it
+ *  on, they are where the two parsers would read the page differently.
+ *
+ *  The result is serialised and parsed again in the frame, and a
+ *  serialisation does not always parse back to itself (mutation XSS:
+ *  foreign content in <svg>/<math> -- foreignObject, mglyph, annotation-xml
+ *  are where HTML and the foreign parser switch, so they go). So the page is
+ *  stripped again until it no longer changes; `stable: false` when it still
+ *  changed after PASSES -- the caller then shows it without scripts.
+ *  Parsed, not matched, so attribute order and quoting do not matter; the
+ *  scripts are inert while parsed. Where there is no DOMParser (server
+ *  render) the page stays as it is -- the frame is only ever shown in a
+ *  browser, and GUARD and the CSPs do not depend on this. */
+export function sanitizePage(html: string): { html: string; stable: boolean } {
+  if (typeof DOMParser === "undefined") return { html, stable: true };
+  let current = strip(html);
+  for (let pass = 1; pass < PASSES; pass += 1) {
+    const again = strip(current);
+    if (again === current) return { html: current, stable: true };
+    current = again;
+  }
+  return { html: current, stable: strip(current) === current };
+}
+
+/** `sanitizePage`'s html. */
+export function withoutNetworkHints(html: string): string {
+  return sanitizePage(html).html;
+}
+
+/** The srcdoc for a sandboxed frame showing `body` (a page or a fragment),
+ *  and whether it runs scripts. `extraCsp` widens the policy for a frame
+ *  that needs it (Run Python: wasm, a blob: worker), see `sandboxCsp`; GUARD
+ *  runs in every frame with scripts. With `scripts: false`, or a page that
+ *  `sanitizePage` could not settle, the frame runs none (`script-src
+ *  'none'`; SandboxFrame then drops `allow-scripts` too). */
+export function buildSandbox(
   body: string,
   extraCsp?: string,
-  { scripts = true }: { scripts?: boolean } = {},
-): string {
+  { scripts: wanted = true }: { scripts?: boolean } = {},
+): { srcdoc: string; scripts: boolean; unstable: boolean } {
+  const page = sanitizePage(body);
+  const scripts = wanted && page.stable;
   const csp = scripts ? sandboxCsp(extraCsp) : sandboxCsp(`${extraCsp ?? ""}; script-src 'none'`);
-  return (
+  const srcdoc =
     "<!doctype html><html><head>" +
     `<meta http-equiv="Content-Security-Policy" content="${attribute(csp)}">` +
     '<meta http-equiv="x-dns-prefetch-control" content="off">' +
     (scripts ? `<script>${GUARD}</script>` : "") +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
-    `</head><body>${withoutNetworkHints(body)}</body></html>`
-  );
+    `</head><body>${page.html}</body></html>`;
+  return { srcdoc, scripts, unstable: !page.stable };
+}
+
+/** `buildSandbox`'s srcdoc. */
+export function buildSandboxSrcdoc(
+  body: string,
+  extraCsp?: string,
+  options: { scripts?: boolean } = {},
+): string {
+  return buildSandbox(body, extraCsp, options).srcdoc;
 }

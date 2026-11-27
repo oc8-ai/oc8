@@ -374,12 +374,138 @@ test("drops resource hints and refreshes a script adds or turns on later", async
       t(()=>document.getElementById("l3").relList.add("preconnect"));
       t(()=>{document.getElementById("m1").httpEquiv="refresh"});
       t(()=>{const d=document.createElement("meta");d.setAttribute("http-equiv","x-dns-prefetch-control");d.content="on";document.head.append(d)});
-      setTimeout(()=>say("hints "+document.querySelectorAll('link,meta[http-equiv*=refresh i],meta[http-equiv*=prefetch i]').length),200);
+      setTimeout(()=>say("hints "+document.querySelectorAll('link[rel*=pre i],link[rel*=prefetch i],meta[http-equiv*=refresh i],meta[http-equiv*=prefetch i]').length),200);
+      setTimeout(()=>say("rels "+["l1","l2","l3"].map((id)=>document.getElementById(id).rel).join(",")),200);
       </script>`,
   );
-  // One prefetch switch stays: the srcdoc's own, "off".
-  expect(said).toContain("hints 1");
+  expect(said).toContain("hints 0");
+  // Refused before the browser saw the change: the links are as they were.
+  expect(said).toContain("rels stylesheet,icon,icon");
   expect(hits).toEqual([]);
+});
+
+test("leaves no prefetch switch to rewrite into a refresh", async ({ page }) => {
+  const said = await run(
+    page,
+    `<script>${SAY}
+    const k=document.querySelector('meta[http-equiv="x-dns-prefetch-control"]');
+    say("switch "+!!k);
+    try{if(k){k.content="0;url=http://${OUT}/?d=secret";k.httpEquiv="refresh"}}catch(e){}
+    try{const m=document.querySelector('meta[http-equiv]');m.content="0;url=http://${OUT}/?d=2";m.httpEquiv="refresh"}catch(e){}
+    setTimeout(()=>say("refresh "+document.querySelectorAll('meta[http-equiv*=refresh i]').length),200);
+    </script>`,
+  );
+  expect(said).toEqual(expect.arrayContaining(["switch false", "refresh 0"]));
+  expect(page.url()).toMatch(/^http:\/\/localhost/);
+  expect(hits).toEqual([]);
+});
+
+// A javascript: URL would run a new document in a fresh realm (no GUARD,
+// RTCPeerConnection back). The opaque-origin sandbox does not run it; this
+// pins that.
+test("does not run a javascript: navigation of its own", async ({ page }) => {
+  const doc =
+    `<script>parent.postMessage("js ran "+typeof RTCPeerConnection,"*")</` + `script>${nested()}`;
+  const url = "javascript:" + encodeURIComponent(JSON.stringify(doc));
+  for (const [name, how] of [
+    ["location.href", `location.href=U`],
+    [
+      "link click",
+      `const a=document.createElement("a");a.href=U;document.body.append(a);a.click()`,
+    ],
+    ["void", `location.href="javascript:void(parent.postMessage('js ran void','*'))"`],
+  ]) {
+    const said = await run(
+      page,
+      `<p id="p">x</p><script>const U=${JSON.stringify(url).replace(/<\//g, "<\\/")};setTimeout(()=>{try{${how}}catch(e){}},20)</script>`,
+    );
+    expect(said.join("|"), name).not.toMatch(/js ran/);
+    expect(hits, name).toEqual([]);
+  }
+});
+
+// What an ordinary interactive artifact does must keep working, so a later
+// tightening cannot quietly break artifacts.
+test("runs an ordinary interactive page", async ({ page }) => {
+  const said = await run(
+    page,
+    `<style>@keyframes spin{to{transform:rotate(1turn)}}#s{animation:spin 1s linear infinite;width:10px;height:10px}</style>
+    <div id="s"></div><button id="b" onclick="window.clicks=(window.clicks||0)+1">+</button>
+    <ul id="list"></ul><template id="row"><li class="row"><b></b></li></template><canvas id="c" width="20" height="20"></canvas>
+    <script>${SAY}
+    const b=document.getElementById("b");
+    let heard=0;b.addEventListener("click",()=>{heard+=1});b.click();b.click();
+    say("clicks "+window.clicks+" "+heard);
+    const list=document.getElementById("list");
+    list.innerHTML=["a","b","c"].map((x)=>"<li data-x='"+x+"'>"+x+"</li>").join("");
+    say("templated "+list.children.length);
+    const t=document.getElementById("row");
+    for (const x of ["d","e"]){const r=t.content.cloneNode(true);r.querySelector("b").textContent=x;list.append(r)}
+    say("cloned "+list.querySelectorAll("li").length);
+    const NS="http://www.w3.org/2000/svg";const svg=document.createElementNS(NS,"svg");
+    const rect=document.createElementNS(NS,"rect");rect.setAttribute("width","5");rect.setAttribute("height","5");
+    svg.appendChild(rect);document.body.appendChild(svg);
+    say("svg "+(svg.querySelector("rect").getBBox?"drawn":"none"));
+    const ctx=document.getElementById("c").getContext("2d");ctx.fillStyle="red";ctx.fillRect(0,0,20,20);
+    say("canvas "+ctx.getImageData(1,1,1,1).data[0]);
+    const link=document.createElement("link");link.rel="stylesheet";link.href="data:text/css,p{}";document.head.append(link);
+    say("link "+link.rel);
+    document.body.classList.add("ready");say("class "+document.body.className);
+    requestAnimationFrame(()=>say("frame "+getComputedStyle(document.getElementById("s")).animationName));
+    </script>`,
+  );
+  expect(said).toEqual(
+    expect.arrayContaining([
+      "clicks 2 2",
+      "templated 3",
+      "cloned 5",
+      "svg drawn",
+      "canvas 255",
+      "link stylesheet",
+      "class ready",
+      "frame spin",
+    ]),
+  );
+  expect(hits).toEqual([]);
+});
+
+// The page has no storage (opaque origin): a page that reaches for it gets
+// a SecurityError. What it drew before stays; the preview is not blank.
+test("keeps what a page drew when it reaches for storage", async ({ page }) => {
+  await run(
+    page,
+    `<p id="p">drawn</p><script>localStorage.setItem("k","v");document.getElementById("p").textContent="after"</script>` +
+      `<p id="q">later markup</p>`,
+  );
+  const frame = page.frames()[1];
+  expect(await frame.locator("#p").textContent()).toBe("drawn");
+  expect(await frame.locator("#q").textContent()).toBe("later markup");
+});
+
+// Mutation XSS: markup the parent's parser reads one way and the frame's,
+// after serialisation, another. Each would leave a nested frame that
+// connects out.
+const MXSS = [
+  (n: string) =>
+    `<math><mtext><table><mglyph><style><!--</style><img title="--><iframe srcdoc='${n}'>">`,
+  (n: string) => `<svg></p><style><a id="</style><iframe srcdoc='${n}'>">`,
+  (n: string) => `<form><math><mtext></form><form><mglyph><style></math><iframe srcdoc='${n}'>`,
+  (n: string) =>
+    `<svg><foreignObject><p><style><a title="</style><iframe srcdoc='${n}'>"></a></style></p></foreignObject></svg>`,
+];
+
+test("leaves no frame from mutation-XSS markup", async ({ page }) => {
+  const n = nested().replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  for (const [i, payload] of MXSS.entries()) {
+    // The payload may swallow any script after it, so the frame is asked.
+    await run(page, payload(n));
+    const left = await page
+      .frames()[1]
+      .evaluate(() => document.querySelectorAll("iframe,frame,object,embed").length);
+    expect(left, `payload ${i}`).toBe(0);
+    expect(page.frames(), `payload ${i}`).toHaveLength(2);
+    expect(hits, `payload ${i}`).toEqual([]);
+  }
 });
 
 test("loads nothing through CSS, forms or media", async ({ page }) => {
