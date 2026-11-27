@@ -189,16 +189,19 @@ _MENTIONS = [
     "Passwort: erforderlich",
     "Authorization: required",
     # A counter or switch in code whose name merely contains a strong word:
-    # a compound identifier the strong word does not end, with a bare small
-    # number or boolean (seen live: a prompt about a variable was refused).
-    "a variable SECRET_FROM_RUN1 = 42",
+    # the identifier's other words are all counter/switch words, the value a
+    # bare small number or boolean.
     "secret_count = 3",
+    "secret_count: 0",
     "password_attempts=5",
+    "password_attempts=3",
     "max_password_length: 128",
+    "max_password_length = 12",
     "MAX_PASSWORD_LENGTH = 64",
     "secretCount = 0.5",
     "SECRET_ENABLED = True",
-    "password_reset_enabled: false",
+    "password_required = True",
+    "is_secret = false",
     '{"secret_count": 3}',
 ]
 #: A credential value the person wrote: refused (and redacted).
@@ -294,6 +297,14 @@ _VALUES = [
     'secret_count = "42"',
     "secret_count = 42abc",
     "secret_count = 0.12345",
+    # A qualifier naming an account or a system is how a short PIN or
+    # password is written: only counter/switch words exempt a key.
+    "password_admin=1234",
+    "SECRET_PROD = 42",
+    "db_password=7",
+    "secret_bob: 4711",
+    "PASSWORD_PROD=42",
+    "password_reset_enabled: false",
 ]
 
 
@@ -351,7 +362,15 @@ def test_redaction_removes_every_value_the_gate_refuses(message: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "message", ["password_2 = 42", "SECRET_FROM_RUN1 = 12345", "SECRET_FROM_RUN1 = '42'"]
+    "message",
+    [
+        "password_2 = 42",
+        "SECRET_FROM_RUN1 = 12345",
+        "SECRET_FROM_RUN1 = '42'",
+        # Refused by design (seen live): "from"/"run1" are no counter words,
+        # and a refused prompt is cheap where a leaked PIN is not.
+        "a variable SECRET_FROM_RUN1 = 42",
+    ],
 )
 def test_a_counter_key_with_a_digit_still_refuses_a_value(message: str) -> None:
     """Kept out of `_VALUES`, whose trace check reads a key with a digit as a
@@ -360,7 +379,9 @@ def test_a_counter_key_with_a_digit_still_refuses_a_value(message: str) -> None:
     from oc8.copilot.redaction import carries_secret_value, redact_text
 
     assert carries_secret_value(message) is True
-    assert "[redacted]" in redact_text(message)
+    redacted = redact_text(message)
+    assert "[redacted]" in redacted
+    assert not carries_secret_value(redacted), redacted
 
 
 @pytest.mark.parametrize("message", _MENTIONS)

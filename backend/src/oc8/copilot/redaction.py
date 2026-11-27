@@ -17,9 +17,9 @@ request, "token: 5000 per month" a quota. Five forms count as a value:
    `--key value`, `--key=value`, curl's `-u user:pass`) under a credential
    key, compound ones included (`OPENAI_API_KEY`, `client_secret`,
    `refresh_token`). A strong key (password, secret, API key, credential,
-   ...) refuses any value but a placeholder -- or, for a code counter that
-   merely contains the word (`max_password_length = 128`), a bare small
-   number or boolean (`_counter`); a weak one (token, auth) only a value
+   ...) refuses any value but a placeholder -- or, for a code counter or
+   switch whose other words are all counter words (`max_password_length =
+   128`), a bare small number or boolean (`_counter`); a weak one (token, auth) only a value
    that looks like one. An Authorization key refuses any value but a
    placeholder, after an optional scheme (`Bearer`, `Basic`, ...);
 2. a well-known key shape on its own (`sk-...`, `ghp_...`, a JWT, a PEM
@@ -172,39 +172,50 @@ def _key_strength(key: str) -> str | None:
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: A bare small literal: up to four characters of number, or a boolean.
 _SMALL_LITERAL = re.compile(r"(?i)(?:\d+(?:\.\d+)?|\.\d+|true|false)")
-#: Name parts that, after a strong word, still name the credential itself
-#: (`SECRET_KEY`, `password_hash`, `secret_pin`).
-_CREDENTIAL_TAILS = frozenset(
-    "key keys value val pin code phrase hash string str text b64 base64 hex plain raw".split()
+#: The only other words a counter's or switch's name may hold besides its
+#: strong word. An allowlist: a qualifier naming an account or a system
+#: (`password_admin`, `SECRET_PROD`, `db_password`) is how a short PIN or
+#: password is written, so any other word keeps the value refused.
+_COUNTER_WORDS = frozenset(
+    """
+    count counts length len min max attempts tries retries limit limits enabled
+    disabled required ttl timeout size age days hours minutes seconds expiry
+    expires rounds iterations version policy strength score index num number
+    total
+    """.split()
 )
+#: Prefixes that make a name a switch or a counter, first word only.
+_COUNTER_PREFIXES = frozenset({"is", "has"})
 
 
 def _counter(raw_key: str, value: str, *, quoted: bool) -> bool:
     """A counter or switch whose code name merely contains a strong word
-    (`SECRET_FROM_RUN1 = 42`, `max_password_length: 128`, `secret_count = 3`,
-    `SECRET_ENABLED = True`): an identifier with name parts after its last
-    strong word that do not name the credential, and a bare small number or
-    boolean. Not a counter: a plain strong key (`password=42`), one the
-    strong word ends (`DB_PASSWORD=1234`), a pin or a numbered password
-    (`secret_pin`, `password_2`), and a quoted or longer value."""
+    (`max_password_length: 128`, `secret_count = 3`, `SECRET_ENABLED = True`):
+    an identifier whose other words are all `_COUNTER_WORDS` (or an
+    `is_`/`has_` prefix), and a bare number of up to four characters or a
+    boolean. Not a counter: a plain strong key (`password=42`), a qualifier
+    naming an account or system (`password_admin=1234`, `DB_PASSWORD=7`), any
+    other word (`SECRET_FROM_RUN1 = 42`, refused by design), and a quoted or
+    longer value."""
     value = _trim(value)
     if quoted or not _IDENTIFIER.fullmatch(raw_key) or not _SMALL_LITERAL.fullmatch(value):
         return False
-    if value[0].isdigit() or value[0] == ".":
-        if len(value) > 4:
-            return False
+    if (value[0].isdigit() or value[0] == ".") and len(value) > 4:
+        return False
     parts = [part.lower() for part in re.split(r"_+|(?<=[a-z])(?=[A-Z])", raw_key) if part]
-    last = -1
+    strong: set[int] = set()
     for i, part in enumerate(parts):
-        pair = parts[i - 1] + part if i else ""
-        if part in _STRONG_WORDS or part in _STRONG_KEYS or pair in _STRONG_WORDS:
-            last = i
-    tail = parts[last + 1 :]
+        if part in _STRONG_WORDS or part in _STRONG_KEYS:
+            strong.add(i)
+        elif i and parts[i - 1] + part in _STRONG_WORDS:
+            strong |= {i - 1, i}
+    others = [(i, part) for i, part in enumerate(parts) if i not in strong]
     return (
-        last >= 0
-        and bool(tail)
-        and all(re.search(r"[a-z]", part) for part in tail)
-        and not any(part in _CREDENTIAL_TAILS for part in tail)
+        bool(strong)
+        and bool(others)
+        and all(
+            part in _COUNTER_WORDS or (i == 0 and part in _COUNTER_PREFIXES) for i, part in others
+        )
     )
 
 
