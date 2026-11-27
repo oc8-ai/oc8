@@ -52,7 +52,7 @@ async def _noop(ctx: EditionToolContext) -> ControlOutcome:
 
 SEARCH = EditionTool(
     tool=NeutralTool(
-        name="web_search",
+        name="news_search",
         description="Search the web.",
         parameters={"type": "object", "properties": {"query": {"type": "string"}}},
     ),
@@ -103,24 +103,24 @@ async def test_community_offers_no_edition_tool() -> None:
         assert await offered_edition_tools(uuid.uuid4(), door="web") == []
         assert await offered_edition_tools(uuid.uuid4(), door=None) == []
         assert await edition_tool_entitled(uuid.uuid4(), SEARCH) is False
-        assert registered_edition_tool("web_search") is SEARCH
-    assert registered_edition_tool("web_search") is None
+        assert registered_edition_tool("news_search") is SEARCH
+    assert registered_edition_tool("news_search") is None
 
 
 async def test_nothing_is_offered_without_registration() -> None:
     assert await offered_edition_tools(uuid.uuid4(), door="web") == []
-    assert registered_edition_tool("web_search") is None
+    assert registered_edition_tool("news_search") is None
 
 
 async def test_entitled_tenant_gets_it_on_allowed_doors_only() -> None:
     with use_edition_tools([SEARCH], _granting(ENTERPRISE_WEB_SEARCH)):  # type: ignore[arg-type]
         offered = await offered_edition_tools(uuid.uuid4(), door="web")
-        assert [t.tool.name for t in offered] == ["web_search"]
+        assert [t.tool.name for t in offered] == ["news_search"]
         assert await offered_edition_tools(uuid.uuid4(), door="telegram") == []
         assert await offered_edition_tools(uuid.uuid4(), door=None) == []
         assert await edition_tool_entitled(uuid.uuid4(), SEARCH) is True
-        assert edition_tool_writes("web_search") is False
-    assert edition_tool_writes("web_search") is None
+        assert edition_tool_writes("news_search") is False
+    assert edition_tool_writes("news_search") is None
 
 
 async def test_each_tool_needs_its_own_capability() -> None:
@@ -133,7 +133,7 @@ async def test_each_tool_needs_its_own_capability() -> None:
 async def test_an_agent_tool_of_the_same_name_wins() -> None:
     """An MCP tool is the agent's own; an edition tool never shadows it."""
     with use_edition_tools([SEARCH], _granting(ENTERPRISE_WEB_SEARCH)):  # type: ignore[arg-type]
-        offered = await offered_edition_tools(uuid.uuid4(), door="web", taken={"web_search"})
+        offered = await offered_edition_tools(uuid.uuid4(), door="web", taken={"news_search"})
         assert offered == []
 
 
@@ -180,7 +180,7 @@ class _ToolEdition(EditionExtension):
 
         @router.get("/edition-tool-probe")
         async def probe() -> dict[str, bool]:
-            return {"registered": registered_edition_tool("web_search") is SEARCH}
+            return {"registered": registered_edition_tool("news_search") is SEARCH}
 
         return [router]
 
@@ -193,7 +193,7 @@ async def test_create_app_activates_extension_tools_per_request() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/edition-tool-probe")
     assert response.json() == {"registered": True}
-    assert registered_edition_tool("web_search") is None
+    assert registered_edition_tool("news_search") is None
 
 
 def test_create_app_refuses_a_shadowing_edition_tool_at_startup() -> None:
@@ -220,9 +220,9 @@ async def test_a_composition_activates_its_tools_and_entitlements() -> None:
     ).with_tools([CANVAS])
     with composition.activate():
         offered = await offered_edition_tools(uuid.uuid4(), door="web")
-        assert sorted(t.tool.name for t in offered) == ["web_search"]
+        assert sorted(t.tool.name for t in offered) == ["news_search"]
         assert registered_edition_tool("canvas_write") is CANVAS
-    assert registered_edition_tool("web_search") is None
+    assert registered_edition_tool("news_search") is None
 
 
 async def test_the_community_composition_offers_nothing() -> None:
