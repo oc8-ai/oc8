@@ -26,8 +26,11 @@ const TITLE_MAX = 80;
 /** How far down a heading or a comment still names the block. */
 const TITLE_LINES = 5;
 
-const OPEN_FENCE = /^([ \t]*)(`{3,}|~{3,})(.*)$/;
-const CLOSE_FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+// CommonMark: a fence is indented by at most three spaces (four make an
+// indented code block). A fence nested deeper in a list is not read as an
+// artifact; it renders as an ordinary code block.
+const OPEN_FENCE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+const CLOSE_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 function kindOf(language: string, lineCount: number): ArtifactKind | null {
   const lang = language.toLowerCase();

@@ -2,7 +2,7 @@
 // While its block is still being written the card says so, and if it is the
 // one open, the panel follows the new text.
 
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { ChevronRight, Code, Globe, Image as ImageIcon, Network } from "lucide-react";
 
 import { useT } from "@/lib/i18n";
@@ -22,6 +22,7 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
   const t = useT();
   const artifacts = useArtifacts();
   const isOpen = artifacts?.openId === artifact.id;
+  const id = useId();
   const Icon = ICONS[artifact.kind];
   const lineCount = artifact.source ? artifact.source.split("\n").length : 0;
 
@@ -37,7 +38,9 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
       type="button"
       onClick={() => artifacts?.open(artifact)}
       aria-pressed={isOpen}
-      aria-label={t(`Open ${artifact.title}`, `${artifact.title} öffnen`)}
+      // Named by what it shows (the title), its state as the description.
+      aria-labelledby={`${id}-open ${id}-title`}
+      aria-describedby={`${id}-state`}
       data-testid="artifact-card"
       className={cn(
         "flex w-full min-w-0 items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -48,8 +51,13 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
         <Icon className="size-4" aria-hidden />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium text-foreground">{artifact.title}</span>
-        <span className="block truncate text-xs text-muted-foreground">
+        <span id={`${id}-open`} className="sr-only">
+          {t("Open", "Öffnen")}
+        </span>
+        <span id={`${id}-title`} className="block truncate text-sm font-medium text-foreground">
+          {artifact.title}
+        </span>
+        <span id={`${id}-state`} className="block truncate text-xs text-muted-foreground">
           {artifact.closed ? (
             <>
               {kindLabel(artifact)} · {t(`${lineCount} lines`, `${lineCount} Zeilen`)}

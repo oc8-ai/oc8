@@ -89,6 +89,14 @@ describe("extractArtifacts", () => {
     expect(artifact.closed).toBe(true);
   });
 
+  it("reads a fence only when indented by three spaces at most", () => {
+    expect(extractArtifacts("    ```html\n    <p>x</p>\n    ```", "m")).toEqual([]);
+    expect(extractArtifacts("\t```html\n<p>x</p>\n```", "m")).toEqual([]);
+    // A closing fence indented by four spaces is content, not the end.
+    const [open] = extractArtifacts("```html\n<p>x</p>\n    ```", "m");
+    expect(open.closed).toBe(false);
+  });
+
   it("reads CRLF line ends like LF", () => {
     const [artifact] = extractArtifacts("```html\r\n<p>x</p>\r\n```\r\n", "m");
     expect(artifact.source).toBe("<p>x</p>");
