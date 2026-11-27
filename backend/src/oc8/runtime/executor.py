@@ -449,12 +449,25 @@ async def requeue_if_already_decided(db: AsyncSession, *, run: m.AgentRun) -> bo
             .limit(1)
         )
     ).scalar_one_or_none()
-    if current is None:
+    # A card still pending is decided by nobody yet. Under one approval per
+    # call an identical repeat of a call whose approval was used up parks on
+    # a NEW card with the same signature: matching it against the old entry
+    # would re-queue the run at once, park again, raise another card -- a
+    # loop that also kept an always-allow rule from answering the card.
+    if current is None or current.status == "pending":
         return False
     sig = call_signature(
         str(current.payload.get("tool", "")), current.payload.get("arguments") or {}
     )
-    if not any(e.get("sig") == sig for e in entries):
+
+    def _decides_current(entry: dict[str, Any]) -> bool:
+        # The entry names its card (`approval_id`); one recorded before
+        # entries did is matched by its signature.
+        if entry.get("approval_id"):
+            return entry.get("approval_id") == str(current.id)
+        return entry.get("sig") == sig
+
+    if not any(isinstance(e, dict) and _decides_current(e) for e in entries):
         return False
 
     await RunRepository(db).transition(run, RunState.QUEUED)
@@ -2079,7 +2092,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # card is already closed and it ends on its next start;
                         # nor a rule-approved call, which is not waiting.
                         held_sender = (
-                            None if stopped or auto_resumed else await _current_chat_sender(db, run)
+                            None
+                            if stopped or requeued or auto_resumed
+                            else await _current_chat_sender(db, run)
                         )
                         if held_sender is not None:
                             held_channel, held_external_id = held_sender

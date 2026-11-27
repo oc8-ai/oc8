@@ -219,3 +219,63 @@ async def test_a_rule_answered_write_resumes_finishes_and_carries_the_queued_tur
     assert [c.decision for c in calls] == ["allow", "allow"]
     [used] = [e for e in events if e.action == "approval.allow_rule_used"]
     assert calls[0].seq < used.seq < calls[1].seq < results[0].seq
+
+
+async def test_a_repeat_of_a_used_approval_parks_once_and_the_rule_answers_it(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One approval covers one call: the resumed leg runs the approved write,
+    then makes the very same call again, which parks on a NEW pending card.
+    The old decision must not re-queue the run for that card (it would park
+    again and raise another card, and keep the rule from answering): the
+    person's always-allow rule answers the new card instead."""
+    recorder = _RecordingServer(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="update_record", arguments={"id": 7})),
+            # Leg 2: the approved call, then the same call again.
+            _turn("", ToolCall(id="c2", name="update_record", arguments={"id": 7})),
+            _turn("", ToolCall(id="c3", name="update_record", arguments={"id": 7})),
+            _turn("Erledigt."),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await grant(db, office)
+        await _copilot(db, office)
+        rule = await _rule(db, office)
+        run = await chat_run(
+            db,
+            office,
+            state=RunState.QUEUED.value,
+            extra={"operator_role": "member", "acting_token_role": "member"},
+        )
+        run_id = run.id
+        await db.commit()
+
+    await _execute(tenant, run_id)  # parks; the rule approves the first card
+    await _execute(tenant, run_id)  # runs it once, parks on the repeat
+
+    assert [name for name, _s, _e in recorder.windows] == ["update_record"]
+    async with app_session(tenant) as db:
+        cards = list(
+            (
+                await db.execute(
+                    select(m.ApprovalRequest)
+                    .where(
+                        m.ApprovalRequest.action_type == "tool_send",
+                        m.ApprovalRequest.payload["run_id"].astext == str(run_id),
+                    )
+                    .order_by(m.ApprovalRequest.created_at)
+                )
+            ).scalars()
+        )
+        assert len(cards) == 2, "the repeat parked once, on one new card"
+        assert [c.status for c in cards] == ["approved", "approved"]
+        assert cards[1].reason == f"always-allow rule {rule.id}"
+        parked = await db.get(m.AgentRun, run_id)
+        assert parked is not None
+        assert parked.state == RunState.QUEUED.value
