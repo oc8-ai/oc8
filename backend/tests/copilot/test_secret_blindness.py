@@ -347,10 +347,14 @@ _ADVERSARIAL = {
     "tags": ("<a>", 330_000),
     "urls": ("a://", 250_000),
     "prose": ("my password is ", 70_000),
+    "pem-begins": ("-----BEGIN PRIVATE KEY-----\n", 50_000),
+    "angle-values": ("password=<", 200_000),
+    "angle-values-spaced": ("password=< ", 100_000),
+    "tags-open": ("<a>x", 250_000),
 }
 
 
-@pytest.mark.parametrize("name", [*_ADVERSARIAL, "jwt-run"])
+@pytest.mark.parametrize("name", [*_ADVERSARIAL, "jwt-run", "prose-blanks", "prose-colon-blanks"])
 def test_the_detector_stays_linear_on_a_long_message(name: str) -> None:
     """About 1 MB of adversarial input in well under a second of CPU: no form
     backtracks quadratically (a quadratic one takes minutes here). CPU time,
@@ -362,6 +366,10 @@ def test_the_detector_stays_linear_on_a_long_message(name: str) -> None:
 
     if name == "jwt-run":
         text = "eyJ" + "a" * 1_000_000
+    elif name == "prose-blanks":
+        text = "password is" + " " * 1_000_000 + ";"
+    elif name == "prose-colon-blanks":
+        text = "password is" + " " * 500_000 + ":" + " " * 500_000 + ";"
     else:
         unit, times = _ADVERSARIAL[name]
         text = unit * times
@@ -403,6 +411,25 @@ def test_a_long_key_and_a_value_on_the_next_line_are_read() -> None:
     assert carries_secret_value("password:\n    hunter2")
     assert carries_secret_value("password      =      hunter2")
     assert carries_secret_value("password=" + "v" * 2000)
+
+
+def test_a_pem_key_is_redacted_to_its_end_line() -> None:
+    from oc8.copilot.redaction import redact_text
+
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----"
+    assert redact_text(f"key: {pem} done") == "key: [redacted] done"
+    two = f"{pem}\nand\n{pem}"
+    assert redact_text(two) == "[redacted]\nand\n[redacted]"
+
+
+def test_a_long_angle_value_is_a_value() -> None:
+    from oc8.copilot.redaction import carries_secret_value
+
+    assert not carries_secret_value("password = <your password>")
+    assert carries_secret_value("password = <" + "z9" * 100 + ">")
+    assert carries_secret_value("password=<hunter2>")
+    assert carries_secret_value("password=[hunter2]")
+    assert not carries_secret_value("password=[redacted]")
 
 
 def test_a_flag_takes_its_value() -> None:

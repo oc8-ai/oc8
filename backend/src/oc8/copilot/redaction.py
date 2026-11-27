@@ -55,6 +55,8 @@ _KEY_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123
 _VALUE_END = frozenset(" \t\r\n,;\"'})]")
 _SEPARATORS = ("=>", "->", ":", "=")
 _QUOTES = "\"'"
+#: How far a `<...>` placeholder may reach; a longer one reads as a value.
+_PLACEHOLDER_SPAN = 128
 
 #: Key words whose value is always a secret: any value but a clear
 #: placeholder counts (`password=gpt-4o`, `secret = manager` are values).
@@ -76,7 +78,13 @@ _PLACEHOLDERS = frozenset(
     missing hidden masked redacted see siehe -
     """.split()
 )
-_PLACEHOLDER_SHAPE = re.compile(r"^(?:<.*>|\*+|x{3,}|\.{3,}|…|\[.*|\$\{\w+\})$", re.IGNORECASE)
+#: `<your password>` / `[password]` are placeholders: words in brackets, no
+#: digits (`<hunter2>` is a value); `[redacted]` is what `redact_text` wrote.
+_PLACEHOLDER_SHAPE = re.compile(
+    r"^(?:<[A-Za-zÄÖÜäöüß _-]{1,64}>|\[[A-Za-zÄÖÜäöüß _-]{1,64}\]?|\*+|x{3,}|\.{3,}|…"
+    r"|\$\{\w+\})$",
+    re.IGNORECASE,
+)
 #: Words that follow a weak key or a sentence about a credential without being
 #: one: fillers, and what follows "my password" in a request about it ("reset
 #: my password please"). Never consulted for a strong key's assignment.
@@ -118,14 +126,14 @@ _BEARER = re.compile(r"(?i)\bbearer[ \t]+(?P<value>[A-Za-z0-9._~+/=-]+)")
 _PROSE = re.compile(
     r"""(?ix)
     \b(?P<key>passwor[dt]s?|kennwort|pw|token|secret|api[\s_-]?key|credential)
-    [ \t]+(?:is|ist|lautet|was|war)[ \t]*:?[ \t]+
-    (?P<value>[^\s,;]+)
+    [ \t]++(?:is|ist|lautet|was|war)\b(?:[ \t]*+:)?[ \t]++
+    (?P<value>[^\s,;]++)
     """
 )
 #: "my password hunter" -- a possessive straight before the value.
 _POSSESSIVE = re.compile(
-    r"(?ix)\b(?:my|our|mein|meine|unser|unsere)[ \t]+(?P<key>passwor[dt]|kennwort|pw)"
-    r"[ \t]+(?P<value>[^\s,;]+)"
+    r"(?ix)\b(?:my|our|mein|meine|unser|unsere)[ \t]++(?P<key>passwor[dt]|kennwort|pw)"
+    r"[ \t]++(?P<value>[^\s,;]++)"
 )
 _XML = re.compile(r"<(?P<key>[A-Za-z][\w.-]*)>(?P<value>[^<\n]+)</(?P=key)>")
 _URL_USERINFO = re.compile(
@@ -203,7 +211,9 @@ def _read_value(text: str, i: int) -> tuple[int, int, bool]:
         line_end = text.find("\n", i + 1, stop)
         return i + 1, stop if line_end == -1 else line_end, True
     if i < n and text[i] == "<":
-        close = text.find(">", i)
+        # A placeholder (`<your password>`) is short: looked for within
+        # `_PLACEHOLDER_SPAN` characters, else the value is read bare.
+        close = text.find(">", i, min(n, i + _PLACEHOLDER_SPAN))
         if close != -1 and text.find("\n", i, close) == -1:
             return i, close + 1, True
     end = i
@@ -292,9 +302,17 @@ def _other_spans(text: str) -> list[tuple[int, int]]:
             continue
         spans.append(match.span("value"))
     spans += [match.span() for match in _SHAPES.finditer(text)]
+    # One forward pass for the END lines: a BEGIN reuses the END found for an
+    # earlier one while it lies ahead, and once none is left none is sought.
+    end: re.Match[str] | None = None
+    exhausted = False
     for begin in _PEM_BEGIN.finditer(text):
-        end = _PEM_END.search(text, begin.end())
-        spans.append((begin.start(), end.end() if end else begin.end()))
+        if not exhausted and (end is None or end.start() < begin.end()):
+            end = _PEM_END.search(text, begin.end())
+            exhausted = end is None
+        spans.append(
+            (begin.start(), end.end() if end is not None and not exhausted else begin.end())
+        )
     spans += [m.span("value") for m in _BEARER.finditer(text) if _bearer_token(m.group("value"))]
     spans += [
         m.span("value") for m in _URL_USERINFO.finditer(text) if not _placeholder(m.group("value"))
