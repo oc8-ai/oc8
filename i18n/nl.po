@@ -595,6 +595,11 @@ msgstr "Antwoord in je eigen woorden"
 msgid "Answer it"
 msgstr "Beantwoorden"
 
+#, fuzzy
+#| msgid "Hard limit (tokens)"
+msgid "Answer limit per step (tokens)"
+msgstr "Harde limiet (tokens)"
+
 msgid "Answer sent"
 msgstr "Antwoord verstuurd"
 
@@ -2683,6 +2688,9 @@ msgstr "Elke minuut"
 msgid "Every save is kept — nothing is pruned."
 msgstr "Elke opslag wordt bewaard — er wordt niets opgeschoond."
 
+msgid "Every step sends the whole conversation again -- instructions, skills, the tool list and every earlier result -- so input tokens add up with each step."
+msgstr ""
+
 msgid "Everyone"
 msgstr "Iedereen"
 
@@ -3061,7 +3069,9 @@ msgstr "wat de agent zelfstandig mag doen"
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr "Hoe grondig dit model nadenkt als chat noch agent een niveau instelt. Een aangepaste waarde gaat ongewijzigd naar de aanbieder."
 
-msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+#, fuzzy
+#| msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited)."
 msgstr "Hoeveel stappen met tools de agent in één run mag zetten voordat hij stopt. Leeg neemt de standaard van het framework over (momenteel hoog, niet onbeperkt -- budget- en tokenmeting controleert maar één keer per run)."
 
 msgid "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too."
@@ -3156,6 +3166,9 @@ msgstr "Invoer"
 
 msgid "Input / 1M"
 msgstr "Invoer / 1M"
+
+msgid "Input and output tokens over every step of one run. The run stops before the next step once it has used this many. A run also stops when it keeps making the same call with the same arguments. Blank inherits the framework default (no limit unless the operator set one)."
+msgstr ""
 
 msgid "Input tokens"
 msgstr "Invoertokens"
@@ -3597,9 +3610,6 @@ msgstr "Max. stappen moet een positief geheel getal zijn"
 
 msgid "Max steps per run"
 msgstr "Max. stappen per run"
-
-msgid "Max tokens"
-msgstr "Max. tokens"
 
 msgid "Max tokens must be a positive number"
 msgstr "Max. tokens moet een positief getal zijn"
@@ -6090,6 +6100,9 @@ msgstr "De agent is niet aangemaakt. Probeer het opnieuw."
 msgid "The agent's runtime cannot run skills."
 msgstr "De runtime van de agent kan geen skills uitvoeren."
 
+msgid "The answer limit caps how long one answer of the model may be -- it is not a budget for the run. Every step sends the whole conversation again (instructions, skills, the tool list and every earlier result), so a run uses far more tokens than this. To cap a run, set a token limit per run below."
+msgstr ""
+
 msgid "The answer was not stopped. Try again."
 msgstr "Het antwoord is niet gestopt. Probeer het opnieuw."
 
@@ -6347,6 +6360,11 @@ msgstr "De tekst bevat inloggegevens. Verwijder ze en stel ze in onder Inloggege
 
 msgid "The timeline didn't load. Reload the page to try again."
 msgstr "De tijdlijn is niet geladen. Laad de pagina opnieuw en probeer het nog eens."
+
+#, fuzzy
+#| msgid "Max tokens must be a positive whole number"
+msgid "The token limit per run must be a positive whole number"
+msgstr "Max. tokens moet een positief geheel getal zijn"
 
 msgid "The update changed the setup form -- click Enable to review and confirm it."
 msgstr "De update heeft het configuratieformulier gewijzigd. Klik op ‘Inschakelen’ om de instellingen te controleren en te bevestigen."
@@ -6743,6 +6761,9 @@ msgstr "Taken"
 
 msgid "Token Budgets (live)"
 msgstr "Tokenbudgetten (live)"
+
+msgid "Token limit per run"
+msgstr ""
 
 msgid "Token spend across agents and departments — metered by the platform."
 msgstr "Tokenverbruik per agent en afdeling — gemeten door het platform."

@@ -637,6 +637,11 @@ msgstr "Antworte in eigenen Worten"
 msgid "Answer it"
 msgstr "Beantworten"
 
+#, fuzzy
+#| msgid "Hard limit exceeded"
+msgid "Answer limit per step (tokens)"
+msgstr "Hartes Limit überschritten"
+
 msgid "Answer sent"
 msgstr "Antwort gesendet"
 
@@ -2877,6 +2882,9 @@ msgstr "Jede Minute"
 msgid "Every save is kept — nothing is pruned."
 msgstr "Jede Speicherung bleibt erhalten — nichts wird gelöscht."
 
+msgid "Every step sends the whole conversation again -- instructions, skills, the tool list and every earlier result -- so input tokens add up with each step."
+msgstr ""
+
 #, fuzzy
 #| msgid "Every minute"
 msgid "Everyone"
@@ -3281,7 +3289,9 @@ msgstr ""
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr "Wie gründlich dieses Modell nachdenkt, wenn weder der Chat noch der Agent eine Stufe setzt. Ein eigener Wert geht unverändert an den Anbieter."
 
-msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+#, fuzzy
+#| msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited)."
 msgstr "Wie viele Tool-Schritte dieser Agent pro Lauf ausführen darf, bevor er stoppt. Leer übernimmt den Framework-Standard (aktuell hoch, aber nicht unbegrenzt -- Budget-/Token-Metering wird nur einmal pro Lauf geprüft)."
 
 msgid "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too."
@@ -3380,6 +3390,9 @@ msgstr "Input"
 
 msgid "Input / 1M"
 msgstr "Input / 1 Mio."
+
+msgid "Input and output tokens over every step of one run. The run stops before the next step once it has used this many. A run also stops when it keeps making the same call with the same arguments. Blank inherits the framework default (no limit unless the operator set one)."
+msgstr ""
 
 msgid "Input tokens"
 msgstr "Input-Token"
@@ -3845,9 +3858,6 @@ msgstr "Max. Steps muss eine positive Ganzzahl sein"
 
 msgid "Max steps per run"
 msgstr "Max. Steps pro Lauf"
-
-msgid "Max tokens"
-msgstr "Max. Tokens"
 
 msgid "Max tokens must be a positive number"
 msgstr "Max. Tokens muss positiv sein"
@@ -6518,6 +6528,9 @@ msgstr "Der Agent wurde nicht angelegt. Versuch es noch einmal."
 msgid "The agent's runtime cannot run skills."
 msgstr "Die Laufzeit des Agenten kann keine Skills ausführen."
 
+msgid "The answer limit caps how long one answer of the model may be -- it is not a budget for the run. Every step sends the whole conversation again (instructions, skills, the tool list and every earlier result), so a run uses far more tokens than this. To cap a run, set a token limit per run below."
+msgstr ""
+
 msgid "The answer was not stopped. Try again."
 msgstr "Die Antwort wurde nicht gestoppt. Versuch es noch einmal."
 
@@ -6789,6 +6802,11 @@ msgstr "Der Text enthält ein Zugangsdatum. Entfern es und richte es unter Zugan
 
 msgid "The timeline didn't load. Reload the page to try again."
 msgstr "Der Verlauf wurde nicht geladen. Lade die Seite neu, um es noch einmal zu versuchen."
+
+#, fuzzy
+#| msgid "Max tokens must be a positive whole number"
+msgid "The token limit per run must be a positive whole number"
+msgstr "Max. Tokens muss eine positive Ganzzahl sein"
 
 msgid "The update changed the setup form -- click Enable to review and confirm it."
 msgstr "Das Update hat das Setup-Formular geändert -- auf Aktivieren klicken, um es zu bestätigen."
@@ -7219,6 +7237,9 @@ msgstr "Todos"
 
 msgid "Token Budgets (live)"
 msgstr "Token-Budgets (live)"
+
+msgid "Token limit per run"
+msgstr ""
 
 msgid "Token spend across agents and departments — metered by the platform."
 msgstr "Token-Verbrauch über Agenten und Abteilungen — vom System gemessen."

@@ -754,6 +754,10 @@ msgid "Answer it"
 msgstr "Respóndela"
 
 #, fuzzy
+msgid "Answer limit per step (tokens)"
+msgstr "Límite estricto superado"
+
+#, fuzzy
 msgid "Answer sent"
 msgstr "Respuesta enviada"
 
@@ -3502,6 +3506,9 @@ msgstr "Cada minuto"
 msgid "Every save is kept — nothing is pruned."
 msgstr "Cada guardado se conserva: nada se elimina."
 
+msgid "Every step sends the whole conversation again -- instructions, skills, the tool list and every earlier result -- so input tokens add up with each step."
+msgstr ""
+
 #, fuzzy
 msgid "Everyone"
 msgstr "Cada minuto"
@@ -3999,7 +4006,7 @@ msgid "How hard this model thinks when neither the chat nor the agent sets a lev
 msgstr "Cuánto piensa este modelo cuando ni el chat ni el agente fijan un nivel. Un valor personalizado se envía al proveedor tal cual."
 
 #, fuzzy
-msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited)."
 msgstr "Cuántos pasos con herramientas puede dar este agente en una ejecución antes de detenerse. En blanco hereda el valor predeterminado del framework (actualmente alto, no ilimitado: el control de presupuesto/tokens solo se comprueba una vez por ejecución)."
 
 #, fuzzy
@@ -4124,6 +4131,9 @@ msgstr "Entrada"
 #, fuzzy
 msgid "Input / 1M"
 msgstr "Entrada / 1M"
+
+msgid "Input and output tokens over every step of one run. The run stops before the next step once it has used this many. A run also stops when it keeps making the same call with the same arguments. Blank inherits the framework default (no limit unless the operator set one)."
+msgstr ""
 
 #, fuzzy
 msgid "Input tokens"
@@ -4692,10 +4702,6 @@ msgstr "Los pasos máximos deben ser un número entero positivo"
 #, fuzzy
 msgid "Max steps per run"
 msgstr "Pasos máximos por ejecución"
-
-#, fuzzy
-msgid "Max tokens"
-msgstr "Tokens máximos"
 
 #, fuzzy
 msgid "Max tokens must be a positive number"
@@ -7952,6 +7958,9 @@ msgstr "No se creó el agente. Inténtalo de nuevo."
 msgid "The agent's runtime cannot run skills."
 msgstr "El entorno de ejecución del agente no puede ejecutar habilidades."
 
+msgid "The answer limit caps how long one answer of the model may be -- it is not a budget for the run. Every step sends the whole conversation again (instructions, skills, the tool list and every earlier result), so a run uses far more tokens than this. To cap a run, set a token limit per run below."
+msgstr ""
+
 #, fuzzy
 msgid "The answer was not stopped. Try again."
 msgstr "No se detuvo la respuesta. Inténtalo de nuevo."
@@ -8289,6 +8298,10 @@ msgstr "El texto contiene una credencial. Quítala y configúrala en Credenciale
 #, fuzzy
 msgid "The timeline didn't load. Reload the page to try again."
 msgstr "La línea de tiempo no se cargó. Recarga la página para intentarlo de nuevo."
+
+#, fuzzy
+msgid "The token limit per run must be a positive whole number"
+msgstr "Los tokens máximos deben ser un número entero positivo"
 
 #, fuzzy
 msgid "The update changed the setup form -- click Enable to review and confirm it."
@@ -8802,6 +8815,9 @@ msgstr "Todos"
 #, fuzzy
 msgid "Token Budgets (live)"
 msgstr "Presupuestos de tokens (en vivo)"
+
+msgid "Token limit per run"
+msgstr ""
 
 #, fuzzy
 msgid "Token spend across agents and departments — metered by the platform."

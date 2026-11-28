@@ -677,6 +677,11 @@ msgstr "Svar med egne ord"
 msgid "Answer it"
 msgstr "Svar sendt"
 
+#, fuzzy
+#| msgid "Hard limit exceeded"
+msgid "Answer limit per step (tokens)"
+msgstr "Hård limit overskredet"
+
 msgid "Answer sent"
 msgstr "Svar sendt"
 
@@ -3115,6 +3120,9 @@ msgstr "Hver afdeling"
 msgid "Every save is kept — nothing is pruned."
 msgstr "Hver lagring bevares — intet slettes."
 
+msgid "Every step sends the whole conversation again -- instructions, skills, the tool list and every earlier result -- so input tokens add up with each step."
+msgstr ""
+
 msgid "Everyone"
 msgstr ""
 
@@ -3549,7 +3557,9 @@ msgstr ""
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr ""
 
-msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+#, fuzzy
+#| msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited)."
 msgstr "Hvor mange tool-brugende trin denne agent må tage i én kørsel, før den stopper. Tom arver framework-standarden (i øjeblikket høj, ikke ubegrænset -- budget-/token-måling tjekker kun én gang pr. kørsel)."
 
 #, fuzzy
@@ -3650,6 +3660,9 @@ msgstr "Input"
 
 msgid "Input / 1M"
 msgstr "Input / 1 mio."
+
+msgid "Input and output tokens over every step of one run. The run stops before the next step once it has used this many. A run also stops when it keeps making the same call with the same arguments. Blank inherits the framework default (no limit unless the operator set one)."
+msgstr ""
 
 msgid "Input tokens"
 msgstr "Input-tokens"
@@ -4137,9 +4150,6 @@ msgstr "Maks. trin skal være et positivt heltal"
 
 msgid "Max steps per run"
 msgstr "Maks. trin pr. kørsel"
-
-msgid "Max tokens"
-msgstr "Maks. tokens"
 
 msgid "Max tokens must be a positive number"
 msgstr "Maks. tokens skal være et positivt tal"
@@ -7014,6 +7024,9 @@ msgstr "Kunne ikke oprette bruger. Prøv igen."
 msgid "The agent's runtime cannot run skills."
 msgstr ""
 
+msgid "The answer limit caps how long one answer of the model may be -- it is not a budget for the run. Every step sends the whole conversation again (instructions, skills, the tool list and every earlier result), so a run uses far more tokens than this. To cap a run, set a token limit per run below."
+msgstr ""
+
 msgid "The answer was not stopped. Try again."
 msgstr ""
 
@@ -7307,6 +7320,11 @@ msgstr ""
 
 msgid "The timeline didn't load. Reload the page to try again."
 msgstr ""
+
+#, fuzzy
+#| msgid "Max tokens must be a positive whole number"
+msgid "The token limit per run must be a positive whole number"
+msgstr "Maks. tokens skal være et positivt heltal"
 
 msgid "The update changed the setup form -- click Enable to review and confirm it."
 msgstr "Opdateringen ændrede opsætningsformularen -- klik på Aktivér for at gennemse og bekræfte den."
@@ -7763,6 +7781,9 @@ msgstr "Todos"
 
 msgid "Token Budgets (live)"
 msgstr "Token-budgetter (live)"
+
+msgid "Token limit per run"
+msgstr ""
 
 msgid "Token spend across agents and departments — metered by the platform."
 msgstr "Token-forbrug på tværs af agenter og afdelinger — målt af platformen."
