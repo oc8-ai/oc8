@@ -4298,6 +4298,9 @@ msgstr ""
 msgid "Nothing in progress right now."
 msgstr ""
 
+msgid "Nothing installed matches this view yet. Install a Capa from the Available tab first."
+msgstr ""
+
 msgid "Nothing is granted for it now."
 msgstr ""
 
