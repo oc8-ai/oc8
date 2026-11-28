@@ -45,7 +45,7 @@ import type {
   Task,
 } from "@/lib/mock-data";
 import type { Skill } from "@/lib/skills";
-import type { QuestionDTO } from "@/lib/conversation-api";
+import type { QuestionAnswers, QuestionDTO } from "@/lib/conversation-api";
 import { useLang } from "@/lib/i18n";
 import {
   localizeActivity,
@@ -211,7 +211,7 @@ export interface ClarificationAnswer {
   id: string;
   runId: string;
   status: string;
-  answer: string;
+  answer?: string | null;
 }
 
 /** One person standing in one department. */
@@ -2329,8 +2329,19 @@ export function useDecideApproval() {
 export function useAnswerClarification() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clarificationId, answer }: { clarificationId: string; answer: string }) =>
-      api.post<ClarificationAnswer>(`/clarifications/${clarificationId}/answer`, { answer }),
+    mutationFn: ({
+      clarificationId,
+      answer,
+      answers,
+    }: {
+      clarificationId: string;
+      answer?: string;
+      answers?: QuestionAnswers;
+    }) =>
+      api.post<ClarificationAnswer>(`/clarifications/${clarificationId}/answer`, {
+        answer,
+        answers,
+      }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: keys.clarifications });
       if (data?.runId) qc.invalidateQueries({ queryKey: ["run", data.runId] });
@@ -2919,8 +2930,8 @@ export function useUpdateAgentTrigger() {
       triggerId,
       cronExpression,
       timezone,
-      actsForCreator,
       taskText,
+      actsForCreator,
       enabled,
       eventConfig,
       eventTargetCredentialId,
@@ -2931,9 +2942,12 @@ export function useUpdateAgentTrigger() {
       cronExpression?: string;
       //: A new zone for the schedule; left out keeps the one it has.
       timezone?: string;
+      //: A new task for the runs this trigger starts; left out keeps the one
+      //: it has. Changing it changes what runs, so the trigger's ownership
+      //: moves to whoever saved it (see `_changes_what_runs`).
+      taskText?: string;
       //: Only the trigger's creator may switch this on (webhook/event).
       actsForCreator?: boolean;
-      taskText?: string;
       enabled?: boolean;
       //: A polled event's settings, and the agent's current fixed login to
       //: listen on; a change to either starts from what is there now.
@@ -2944,8 +2958,8 @@ export function useUpdateAgentTrigger() {
       api.patch<TriggerDTO>(`/triggers/${triggerId}`, {
         cronExpression,
         timezone,
-        actsForCreator,
         taskText,
+        actsForCreator,
         enabled,
         eventConfig,
         eventTargetCredentialId,

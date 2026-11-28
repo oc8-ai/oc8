@@ -77,21 +77,32 @@ class _Accumulator:
             self.model = chunk.model
 
     def result(self) -> CompletionResult:
-        tool_calls = [
-            ToolCall(
-                id=call.id or f"call_{index}",
-                name=call.name or "",
+        calls: list[ToolCall] = []
+        truncated = False
+        for index, call in sorted(self.calls.items()):
+            raw = call.arguments_json.strip()
+            if raw:
+                try:
+                    arguments = json.loads(raw)
+                except ValueError:
+                    # A call cut off by max_tokens ends mid-JSON. Executing it
+                    # with half an argument list would act on arguments the
+                    # model never wrote; drop it and let the runtimes' length
+                    # retry ask again with a bigger budget instead.
+                    truncated = True
+                    continue
+            else:
                 # A call with no arguments streams zero input_json_delta/no
                 # arguments fragment at all (e.g. a no-arg tool) -- treat an
                 # empty accumulated string as "{}", not a parse error.
-                arguments=json.loads(call.arguments_json) if call.arguments_json.strip() else {},
+                arguments = {}
+            calls.append(
+                ToolCall(id=call.id or f"call_{index}", name=call.name or "", arguments=arguments)
             )
-            for index, call in sorted(self.calls.items())
-        ]
         reasoning = "".join(self.reasoning_parts).strip()
         return CompletionResult(
             text="".join(self.text_parts),
-            tool_calls=tool_calls,
+            tool_calls=calls,
             usage=self.usage,
             stop_reason=self.stop_reason,
             provider=self.provider or "",
@@ -99,6 +110,7 @@ class _Accumulator:
             reasoning=reasoning or None,
             replay_blocks=self.replay_blocks,
             reasoning_dropped=self.reasoning_dropped,
+            truncated_tool_calls=truncated,
         )
 
 

@@ -363,7 +363,7 @@ class ClarificationAnswerDTO(CamelModel):
     id: str
     run_id: str
     status: str
-    answer: str
+    answer: str | None
 
 
 class SeatDTO(CamelModel):

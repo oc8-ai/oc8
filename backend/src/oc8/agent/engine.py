@@ -193,6 +193,7 @@ from oc8.modelrouter.sampling import (
     bumped_for_length_retry,
     refusal_message,
     resolve_params,
+    truncated_without_answer,
 )
 from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, with_prompt_cache_key
@@ -2314,9 +2315,7 @@ async def run_agent(
                         result.tool_calls = _salvage_tool_calls(result.text, _offered())
                     retry_params = bumped_for_length_retry(resolved_params, provider=provider)
                     if (
-                        result.stop_reason == "length"
-                        and not result.tool_calls
-                        and not result.text.strip()
+                        truncated_without_answer(result)
                         # Already at the provider's cap: a retry could only
                         # fail the same way again.
                         and retry_params.max_tokens > resolved_params.max_tokens
@@ -2402,7 +2401,7 @@ async def run_agent(
                     # whatever it wrote before that is not an answer, and
                     # asking again would only be declined again.
                     refused = result.stop_reason == "refusal"
-                    if refused or (result.stop_reason == "length" and not result.text.strip()):
+                    if refused or truncated_without_answer(result):
                         # Truncated even after the retry above -- the model
                         # never produced an answer or a tool call, so this must
                         # never read as "done" (a genuine finish always has at

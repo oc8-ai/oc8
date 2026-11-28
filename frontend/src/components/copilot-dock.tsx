@@ -1,7 +1,7 @@
 import { ChevronDown, Plus, Sparkles, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { cn } from "@/lib/utils";
+import { cn, newId } from "@/lib/utils";
 import { urlId } from "@/lib/ids";
 import { CopilotPersonaHeader } from "@/components/copilot-persona";
 import type { SigilItem } from "@/components/composer-sigils";
@@ -342,7 +342,7 @@ function CopilotDockPanel() {
     if (loadedMemberId === undefined || loadedMemberId !== memberId) return; // wait for the per-member load above to commit
     if (tabs.length > 0) return;
     if (!sessions) return;
-    const uiId = crypto.randomUUID();
+    const uiId = newId();
     setTabs([{ uiId, sessionId: mostRecentSession(sessions)?.id ?? null }]);
     setActiveUiId(uiId);
   }, [memberId, loadedMemberId, tabs.length, sessions]);
@@ -365,7 +365,7 @@ function CopilotDockPanel() {
   }, [memberId, loadedMemberId, sessions, tabs, activeUiId]);
 
   function openNewTab() {
-    const uiId = crypto.randomUUID();
+    const uiId = newId();
     setTabs((prev) => [...prev, { uiId, sessionId: null }]);
     setActiveUiId(uiId);
   }
@@ -376,7 +376,7 @@ function CopilotDockPanel() {
       setActiveUiId(existing.uiId);
       return;
     }
-    const uiId = crypto.randomUUID();
+    const uiId = newId();
     setTabs((prev) => [...prev, { uiId, sessionId }]);
     setActiveUiId(uiId);
   }

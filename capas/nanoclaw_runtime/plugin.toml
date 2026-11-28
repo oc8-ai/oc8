@@ -5,7 +5,7 @@
 
 [plugin]
 name = "nanoclaw_runtime"
-version = "0.1.0"
+version = "0.1.1"
 type = "runtime_adapter"
 trust = "first_party"
 summary = "Run agents in nanoclaw's container — the harness drives its own loop, oc8 stays the only way out"

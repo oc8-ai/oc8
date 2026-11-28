@@ -434,3 +434,71 @@ async def test_a_structured_question_is_listed_with_its_options_and_answered_by_
         run = await db.get(m.AgentRun, office.sales_run)
         assert run is not None and run.state == "queued"
         assert run.context["clarifications"][-1]["answers"] == {"tier": ["s2"]}
+
+
+async def test_two_structured_questions_are_answered_with_their_option_keys(
+    app_session: AppSessionFactory, queue: _FakeQueue
+) -> None:
+    """Regression: a run parked on TWO structured questions could never be
+    answered from the inbox — any prose collapsed onto the first question and
+    the second stayed `required`, so every send came back 422. The door takes
+    `answers` (`{id: [option keys] | text}`), same shape as the chat's card."""
+    office = await _office(app_session)
+    async with app_session(office.tenant) as db:
+        run = await db.get(m.AgentRun, office.sales_run)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "pending_questions": [
+                {
+                    "id": "contact",
+                    "prompt": "Kontakt?",
+                    "kind": "single",
+                    "options": [
+                        {"key": "placeholder", "label": "Placeholder"},
+                        {"key": "human", "label": "Zostaw"},
+                    ],
+                    "allow_other": True,
+                },
+                {
+                    "id": "companydata",
+                    "prompt": "Dane lotniska?",
+                    "kind": "single",
+                    "options": [{"key": "no", "label": "Nie"}, {"key": "yes", "label": "Tak"}],
+                },
+            ],
+        }
+    headers = _headers(office.tenant, "hos", "member")
+
+    async with _http() as http:
+        half = await http.post(
+            f"/api/v1/clarifications/{office.sales_clar}/answer",
+            json={"answers": {"companydata": ["no"]}},
+            headers=headers,
+        )
+        assert half.status_code == 422, half.text
+        assert "required" in half.text
+
+        empty = await http.post(
+            f"/api/v1/clarifications/{office.sales_clar}/answer",
+            json={},
+            headers=headers,
+        )
+        assert empty.status_code == 422, empty.text
+
+        ok = await http.post(
+            f"/api/v1/clarifications/{office.sales_clar}/answer",
+            json={"answers": {"contact": ["placeholder"], "companydata": ["no"]}},
+            headers=headers,
+        )
+        assert ok.status_code == 200, ok.text
+        assert queue.enqueued == [(office.sales_run, office.tenant)]
+
+    async with app_session(office.tenant) as db:
+        run = await db.get(m.AgentRun, office.sales_run)
+        assert run is not None and run.state == "queued"
+        entry = run.context["clarifications"][-1]
+        assert entry["answers"] == {"contact": ["placeholder"], "companydata": ["no"]}
+        clar = await db.get(m.Clarification, office.sales_clar)
+        assert clar is not None and clar.status == "answered"
+        assert "Kontakt?: Placeholder" in clar.answer

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Save } from "lucide-react";
 import { TimezoneSelect } from "@/components/timezone-select";
 import { describeCron, describeSchedule } from "@/lib/describe-cron";
@@ -103,16 +103,29 @@ export function CronBuilder({
 }) {
   const t = useT();
   const [state, setState] = useState<CronState>(() => parseCron(initial));
+  // The expression the card shows and saves. It is the caller's until the
+  // person moves a control: rebuilding it from `state` instead would quietly
+  // rewrite a cron the controls cannot express ("0 */2 * * *" would save as
+  // a daily 9:00) and would keep showing the value the card mounted with
+  // after a schedule loaded into it later.
+  const [cron, setCron] = useState<string>(() => initial.trim());
+
+  useEffect(() => {
+    const next = initial.trim();
+    if (!next) return;
+    setState(parseCron(next));
+    setCron(next);
+  }, [initial]);
 
   function update(patch: Partial<CronState>) {
     setState((prev) => {
       const next = { ...prev, ...patch };
-      onChange(buildCron(next));
+      const expression = buildCron(next);
+      setCron(expression);
+      onChange(expression);
       return next;
     });
   }
-
-  const cron = buildCron(state);
   const human =
     timezone !== undefined ? describeSchedule(cron, timezone, t) : describeCron(cron, t);
 
