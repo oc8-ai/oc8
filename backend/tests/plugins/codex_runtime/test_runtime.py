@@ -422,7 +422,11 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
         )
 
     fresh_spec = driver.specs[0]
-    assert fresh_spec.command[-2:] == ["--", f"{hostile_task_text}\n\n{TOOLCHAIN_NOTE}"]
+    # The run context (date, person) is prepended to the prompt, which
+    # still sits after `--` as one positional: it cannot become a flag.
+    assert fresh_spec.command[-2] == "--"
+    assert fresh_spec.command[-1].startswith("Current date and time: ")
+    assert fresh_spec.command[-1].endswith(f"\n\n{hostile_task_text}\n\n{TOOLCHAIN_NOTE}")
 
     driver.specs.clear()
     agent2, run_id2 = await _seed_agent(
@@ -440,7 +444,11 @@ async def test_task_text_cannot_be_parsed_as_a_flag(
         )
 
     resume_spec = driver.specs[0]
-    assert resume_spec.command[-2:] == ["--", f"{hostile_task_text}\n\n{TOOLCHAIN_NOTE}"]
+    # The run context (date, person) is prepended to the prompt, which
+    # still sits after `--` as one positional: it cannot become a flag.
+    assert resume_spec.command[-2] == "--"
+    assert resume_spec.command[-1].startswith("Current date and time: ")
+    assert resume_spec.command[-1].endswith(f"\n\n{hostile_task_text}\n\n{TOOLCHAIN_NOTE}")
     assert "codex-sess-9" in resume_spec.command
 
 
@@ -808,5 +816,7 @@ async def test_the_toolchain_note_is_appended_to_the_task_prompt(
         )
 
     spec = driver.specs[0]
-    assert spec.command[-1].startswith("fix the bug\n\n")
+    # Run context first (date, person), then the task, then the note.
+    assert spec.command[-1].startswith("Current date and time: ")
+    assert "\n\nfix the bug\n\n" in spec.command[-1]
     assert "Playwright" in spec.command[-1]

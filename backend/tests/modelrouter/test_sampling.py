@@ -10,6 +10,7 @@ forever, which is exactly what it looked like in the Odoo demo.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 from oc8 import models as m
@@ -18,21 +19,30 @@ from oc8.modelrouter.sampling import (
     DEFAULT_TEMPERATURE,
     bumped_for_length_retry,
     resolve_params,
+    truncated_without_answer,
 )
-from oc8.modelrouter.types import ModelParams
+from oc8.modelrouter.types import ModelParams, ToolCall
 
 
 def _agent(definition: dict[str, Any] | None = None) -> m.Agent:
     return m.Agent(
-        id=uuid.uuid4(), tenant_id=uuid.uuid4(), department_id=uuid.uuid4(),
-        name="Nora", status="idle", definition=definition or {}, presentation={},
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        department_id=uuid.uuid4(),
+        name="Nora",
+        status="idle",
+        definition=definition or {},
+        presentation={},
     )
 
 
 def _config(params: dict[str, Any] | None) -> m.ModelConfig:
     return m.ModelConfig(
-        id=uuid.uuid4(), tenant_id=uuid.uuid4(), provider="opaas_ai",
-        model="opaas_ai:odoo-gpt", params=params if params is not None else {},
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        provider="opaas_ai",
+        model="opaas_ai:odoo-gpt",
+        params=params if params is not None else {},
         supports_reasoning=True,
     )
 
@@ -260,3 +270,38 @@ def test_the_budget_message_says_what_to_do() -> None:
     assert "max_tokens" in message
     assert "OC8_DEFAULT_MAX_TOKENS" in message
     assert "reasoning effort" in message
+
+
+def _cut_off(
+    *, text: str = "", tool_calls: list[Any] | None = None, truncated_tool_calls: bool = False
+) -> Any:
+    return SimpleNamespace(
+        stop_reason="length",
+        text=text,
+        tool_calls=tool_calls or [],
+        truncated_tool_calls=truncated_tool_calls,
+    )
+
+
+def test_a_turn_cut_off_with_nothing_visible_needs_the_retry() -> None:
+    assert truncated_without_answer(_cut_off()) is True
+
+
+def test_a_tool_call_cut_off_mid_json_needs_the_retry_even_with_text_before_it() -> None:
+    """The model wrote "Sure, sending it now." and then ran out of budget mid-
+    arguments. The dropped call is not an answer -- the step has nothing to
+    dispatch -- so this is the same interruption as an empty turn."""
+    assert truncated_without_answer(_cut_off(text="Sure.", truncated_tool_calls=True)) is True
+
+
+def test_a_step_with_a_complete_call_is_not_truncated_without_answer() -> None:
+    call = ToolCall(id="c1", name="send_email", arguments={"to": "a@b.c"})
+    assert truncated_without_answer(_cut_off(tool_calls=[call], truncated_tool_calls=True)) is False
+    assert truncated_without_answer(_cut_off(tool_calls=[call])) is False
+
+
+def test_a_finished_answer_is_never_truncated_without_answer() -> None:
+    done = SimpleNamespace(
+        stop_reason="stop", text="Done.", tool_calls=[], truncated_tool_calls=False
+    )
+    assert truncated_without_answer(done) is False

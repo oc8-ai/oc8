@@ -192,6 +192,26 @@ def _chat_level(definition: dict[str, Any] | None) -> ReasoningLevel | None:
     return as_level(model_params.get(CHAT_LEVEL_KEY)) if isinstance(model_params, dict) else None
 
 
+def truncated_without_answer(result: Any) -> bool:
+    """True when this turn was cut off by the answer budget and nothing
+    survived that a run can act on.
+
+    The one rule both runtimes share, for the retry with a doubled budget and
+    for ending a run as failed. Two shapes count: nothing visible at all (a
+    reasoning model that spent the whole budget on hidden thinking), and a tool
+    call whose arguments ended mid-JSON -- `accumulate.py` and
+    `_openai_common.parse_response` drop such a call rather than execute half
+    an argument list, so without the flag it would pass as a finished answer
+    written before the cut, or as a run that simply had nothing to do. A step
+    that still has a complete call to dispatch is not this: dispatch it.
+    """
+    if result.tool_calls:
+        return False
+    if result.truncated_tool_calls:
+        return True
+    return result.stop_reason == "length" and not result.text.strip()
+
+
 def resolve_params(
     config: m.ModelConfig | None,
     *,

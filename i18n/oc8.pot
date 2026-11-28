@@ -26,6 +26,9 @@ msgstr ""
 msgid "(no longer allowed by your organisation)"
 msgstr ""
 
+msgid "(no task)"
+msgstr ""
+
 msgid "(optional)"
 msgstr ""
 
@@ -4451,6 +4454,9 @@ msgstr ""
 msgid "Open responsibilities and follow-ups"
 msgstr ""
 
+msgid "Open Schedule"
+msgstr ""
+
 msgid "Open the agent"
 msgstr ""
 
@@ -5942,6 +5948,9 @@ msgstr ""
 msgid "Task distribution"
 msgstr ""
 
+msgid "Task for each run"
+msgstr ""
+
 msgid "tasks"
 msgstr ""
 
@@ -6812,9 +6821,6 @@ msgstr ""
 msgid "Try again"
 msgstr ""
 
-msgid "Try again in a moment."
-msgstr ""
-
 msgid "Turn off"
 msgstr ""
 
@@ -7199,6 +7205,9 @@ msgstr ""
 msgid "What does it do?"
 msgstr ""
 
+msgid "What every scheduled run is told to do. A scheduled run gets this task on its own, without the conversation you are reading — change it under Schedule on the Configuration tab."
+msgstr ""
+
 msgid "What happens if you agree"
 msgstr ""
 
@@ -7227,6 +7236,9 @@ msgid "What should this agent do? Sent with every run."
 msgstr ""
 
 msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
+msgstr ""
+
+msgid "What the agent is told to do on every scheduled run — its standing Instructions always apply on top of this."
 msgstr ""
 
 msgid "What this assistant gets"
@@ -7284,6 +7296,9 @@ msgid "With recommendation"
 msgstr ""
 
 msgid "within limits"
+msgstr ""
+
+msgid "Without a task, the runs this schedule starts have nothing to work on and no title on the board."
 msgstr ""
 
 msgid "Work"

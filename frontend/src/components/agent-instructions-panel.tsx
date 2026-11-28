@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Link } from "@tanstack/react-router";
 import { Paperclip, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { mostRecentSession } from "@/lib/chat-sessions";
 import { Panel } from "@/components/app-shell";
+import { describeSchedule } from "@/lib/describe-cron";
 import { useConfirm } from "@/hooks/use-confirm";
 import { MAX_ATTACHMENT_BYTES } from "@/lib/api";
 import {
   useAgentInstructionFiles,
   useAgentInstructionHistory,
+  useAgentTriggers,
   useAssistant,
   useDeleteInstructionFile,
   useUpdateAgentInstructions,
@@ -318,6 +321,11 @@ export function AgentInstructionsPanel({
   const files = useAgentInstructionFiles(agentId);
   const uploadFile = useUploadInstructionFile(agentId);
   const deleteInstructionFile = useDeleteInstructionFile(agentId);
+  // The schedule's own instruction, so this panel can say what a scheduled
+  // run is actually handed: the trigger's task text is the run's whole task,
+  // and nothing here shows it today.
+  const { data: triggers } = useAgentTriggers(agentId);
+  const cronTrigger = triggers?.find((tr) => tr.kind === "cron" && tr.enabled);
   const { confirm, ConfirmDialog } = useConfirm();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -482,6 +490,31 @@ export function AgentInstructionsPanel({
           {!mayManage &&
             ` ${t("Your role does not include agent:manage, so this field is read-only for you.", "Deine Rolle enthält agent:manage nicht, deshalb ist dieses Feld für dich schreibgeschützt.")}`}
         </p>
+
+        {cronTrigger?.cronExpression && (
+          <div className="mt-4 rounded-md border border-border/60 bg-background/30 p-3">
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              {describeSchedule(cronTrigger.cronExpression, cronTrigger.timezone, t)}
+            </div>
+            <p className="mt-1.5 whitespace-pre-wrap text-sm">
+              {cronTrigger.taskText || t("(no task)", "(keine Aufgabe)")}
+            </p>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              {t(
+                "What every scheduled run is told to do. A scheduled run gets this task on its own, without the conversation you are reading — change it under Schedule on the Configuration tab.",
+                "Was jedem geplanten Lauf aufgetragen wird. Ein geplanter Lauf erhält nur diese Aufgabe — ohne die Unterhaltung, die du gerade liest. Zu ändern unter Zeitplan auf der Registerkarte Konfiguration.",
+              )}{" "}
+              <Link
+                to="/agents/$id"
+                params={{ id: agentId }}
+                search={{ tab: "config" }}
+                className="underline"
+              >
+                {t("Open Schedule", "Zeitplan öffnen")}
+              </Link>
+            </p>
+          </div>
+        )}
 
         <div className="mt-6 border-t border-border pt-4">
           <div className="flex items-center justify-between gap-2">

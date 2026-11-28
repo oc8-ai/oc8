@@ -14,6 +14,7 @@ const {
   listInstructionFilesMock,
   uploadInstructionFileMock,
   deleteFileMock,
+  triggersMock,
 } = vi.hoisted(() => ({
   getHistory: vi.fn((_url: string) => ({ revisions: [], totalCount: 0, nextBeforeSeq: null })),
   patchInstructions: vi.fn(),
@@ -25,12 +26,14 @@ const {
   listInstructionFilesMock: vi.fn(() => []),
   uploadInstructionFileMock: vi.fn(),
   deleteFileMock: vi.fn(),
+  triggersMock: vi.fn(() => []),
 }));
 
 vi.mock("@/lib/api", () => ({
   api: {
     get: (url: string) => {
       if (url.includes("/instructions/history")) return getHistory(url);
+      if (url.endsWith("/triggers")) return triggersMock();
       throw new Error(`unexpected GET ${url}`);
     },
     patch: (url: string, body: unknown) => {
@@ -55,6 +58,20 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/hooks")>();
   return { ...actual, useAssistant: () => assistantMock() };
 });
+
+// The panel links to the agent's Configuration tab, so it needs a Link; a real
+// one would require a router context here.
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({
+    children,
+    to,
+    search,
+  }: {
+    children: React.ReactNode;
+    to: string;
+    search?: Record<string, unknown>;
+  }) => <a href={`${to}?${new URLSearchParams(search ?? {}).toString()}`}>{children}</a>,
+}));
 
 vi.mock("@/lib/hooks-chat", () => ({
   useChatSessions: () => sessionsMock(),
@@ -84,6 +101,8 @@ describe("AgentInstructionsPanel", () => {
     sendMessageMock.mockReset();
     listInstructionFilesMock.mockReset();
     listInstructionFilesMock.mockReturnValue([]);
+    triggersMock.mockReset();
+    triggersMock.mockReturnValue([]);
     uploadInstructionFileMock.mockReset();
     deleteFileMock.mockReset();
   });
@@ -679,6 +698,68 @@ describe("AgentInstructionsPanel", () => {
 
       expect(screen.queryByLabelText(/attach a file/i)).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /delete file/i })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("the schedule's own task", () => {
+    const cron = {
+      id: "t1",
+      agentId: "agent-1",
+      kind: "cron" as const,
+      taskText: "Review every open opportunity and take the next step",
+      enabled: true,
+      cronExpression: "0 7 * * 1-5",
+      timezone: "Europe/Warsaw",
+      nextRunAt: null,
+      lastRunAt: null,
+      eventSource: null,
+      eventType: null,
+      webhookUrl: null,
+      createdByMemberId: "me",
+      createdByName: "Me",
+      actsForCreator: false,
+      needsConfirmation: false,
+    };
+
+    it("shows what a scheduled run is told to do", async () => {
+      triggersMock.mockReturnValue([cron]);
+      renderWithClient(
+        <AgentInstructionsPanel agentId="agent-1" mission="Old mission" mayManage={true} />,
+      );
+      expect(
+        await screen.findByText("Review every open opportunity and take the next step"),
+      ).toBeInTheDocument();
+      expect(
+        await screen.findByText(/Every weekday at 7:00 \(Europe\/Warsaw\)/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/without the conversation you are reading/i)).toBeInTheDocument();
+    });
+
+    it("links the schedule's task to the editor that changes it", async () => {
+      triggersMock.mockReturnValue([cron]);
+      renderWithClient(
+        <AgentInstructionsPanel agentId="agent-1" mission="Old mission" mayManage={true} />,
+      );
+      const link = await screen.findByRole("link", { name: /open schedule/i });
+      expect(link).toHaveAttribute("href", "/agents/$id?tab=config");
+    });
+
+    it("says nothing about a schedule the agent does not have", async () => {
+      triggersMock.mockReturnValue([]);
+      renderWithClient(
+        <AgentInstructionsPanel agentId="agent-1" mission="Old mission" mayManage={true} />,
+      );
+      await waitFor(() => expect(triggersMock).toHaveBeenCalled());
+      expect(screen.queryByText(/scheduled run/i)).toBeNull();
+    });
+
+    it("does not advertise a schedule that is switched off", async () => {
+      triggersMock.mockReturnValue([{ ...cron, enabled: false }]);
+      renderWithClient(
+        <AgentInstructionsPanel agentId="agent-1" mission="Old mission" mayManage={true} />,
+      );
+      await waitFor(() => expect(triggersMock).toHaveBeenCalled());
+      expect(screen.queryByText(/scheduled run/i)).toBeNull();
     });
   });
 });

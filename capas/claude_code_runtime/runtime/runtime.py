@@ -58,6 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.engine import RunResult, open_run_task
+from oc8.agent.preamble import run_context
 from oc8.config import get_settings
 from oc8.realtime.emit import publish_run_output_delta
 from oc8.runtime.images import registry_auth_for_runtime, runtime_image
@@ -277,6 +278,15 @@ class ClaudeCodeRuntime:
         settings = get_settings()
         token = run_token(tenant_id=tenant_id, agent=agent, run_id=run_id)
         mcp_url = f"{settings.internal_base_url}/mcp"
+        # Same run context the built-in runtimes get from build_run_preamble
+        # (current date, and the person behind a chat): this runtime composes
+        # its own prompt, so without it its agent is the one still guessing.
+        # Prepended, so the task stays the last thing the model reads.
+        prompt_text = (
+            await run_context(db, tenant_id=tenant_id, task=task, run_id=run_id)
+            + "\n\n"
+            + task_text
+        )
         resume_session_id = get_session_id(run, self.plugin_name)
 
         # A resume leg needs the transcript the previous leg saved; without
@@ -311,7 +321,7 @@ class ClaudeCodeRuntime:
             # Identity for the startup reaper; the name is only for humans.
             labels={RUN_LABEL: str(run_id), TENANT_LABEL: str(tenant_id)},
             command=_build_command(
-                task_text=f"{task_text}\n\n{TOOLCHAIN_NOTE}",
+                task_text=f"{prompt_text}\n\n{TOOLCHAIN_NOTE}",
                 mcp_config_path=_MCP_CONFIG_PATH,
                 resume_session_id=resume_session_id,
             ),

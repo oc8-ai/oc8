@@ -18,6 +18,7 @@ from oc8.caching.department_cache import cache_key, get_cached, is_enabled
 from oc8.caching.department_cache import delete as _delete
 from oc8.caching.department_cache import store as _store
 from oc8.modelrouter.registry import canonical_provider
+from oc8.modelrouter.sampling import truncated_without_answer
 from oc8.modelrouter.types import (
     CompletionResult,
     ModelParams,
@@ -121,6 +122,12 @@ async def store_if_matching(
     to the raw string when canonical_provider() doesn't recognise it, so an
     unknown-alias caller still gets the mismatch protection rather than none."""
     if key is None:
+        return
+    if truncated_without_answer(result):
+        logger.info(
+            "department cache: not storing a result cut off by the answer budget "
+            "(a replay of the same cut-off would repeat the failure for the TTL)"
+        )
         return
     if not result.tool_calls and _is_bare_json(result.text):
         logger.info(
