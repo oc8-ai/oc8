@@ -337,7 +337,7 @@ async def email_verify(
             .where(m.SecondFactor.member_id == member_id, m.SecondFactor.method == "email")
             .values(last_used_at=dt.datetime.now(tz=dt.UTC))
         )
-    return mint_full_session(principal, member_id)
+    return await mint_full_session(db, principal, member_id)
 
 
 class SecondFactorItem(CamelModel):
@@ -690,7 +690,7 @@ async def passkey_authenticate_verify(
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, _PASSKEY_REFUSED)
         factor.data = {**factor.data, "sign_count": new_count}
         factor.last_used_at = dt.datetime.now(tz=dt.UTC)
-    return mint_full_session(principal, member_id)
+    return await mint_full_session(db, principal, member_id)
 
 
 async def _last_required_passkey(db: DbSession, member: m.OrgMember) -> bool:

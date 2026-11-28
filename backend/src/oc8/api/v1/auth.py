@@ -15,7 +15,8 @@ import hashlib
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,8 +26,14 @@ from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.api.v1._serializers import member_to_dto, seat_to_dto
 from oc8.api.v1.members import _member_dto
 from oc8.audit import append_event
-from oc8.auth import Principal, get_identity_provider
-from oc8.auth.password import PasswordHashingError, hash_password, verify_password
+from oc8.auth import DevIdentityProvider, Principal, get_identity_provider
+from oc8.auth.password import (
+    PasswordHashingError,
+    hash_password,
+    password_fingerprint,
+    verify_password,
+)
+from oc8.auth.provider import mint_password_session
 from oc8.auth.second_factors import sign_in_address_changed
 from oc8.auth.totp_gate import second_factor_gate
 from oc8.authz.permissions import MEMBER_ROLE
@@ -1047,11 +1054,11 @@ async def password_setup(body: PasswordSetupRequest) -> PasswordSessionResponse:
 
     # Mint a token for this new member
     provider = get_identity_provider()
-    token = provider.mint(
+    token = mint_password_session(
         tenant_id=org.id,
         subject=body.email,
         role="org_admin",  # Initial admin
-        kind="operator",
+        password_hash=password_hash,
     )
 
     # Verify the token to return principal info
@@ -1201,11 +1208,8 @@ async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
     # `totp_grace_expires_at` is non-None only for a member whose clock is
     # actually running (the frontend's nag banner); an opt-in, non-mandatory
     # member has no clock at all and gets exactly the response they always got.
-    token = provider.mint(
-        tenant_id=org.id,
-        subject=subject,
-        role=token_role,
-        kind="operator",
+    token = mint_password_session(
+        tenant_id=org.id, subject=subject, role=token_role, password_hash=password_hash
     )
     principal = provider.verify(token)
     return PasswordSessionResponse(
@@ -1217,6 +1221,78 @@ async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
             if outcome.totp_grace_expires_at is not None
             else None
         ),
+    )
+
+
+class SessionRenewResponse(CamelModel):
+    token: str
+
+
+@router.post(
+    "/auth/session/renew",
+    response_model=SessionRenewResponse,
+    dependencies=[Depends(unguarded("self-service: renews only the caller's own session"))],
+)
+async def renew_session(
+    request: Request, db: DbSession, principal: CurrentPrincipal
+) -> SessionRenewResponse:
+    """Swap a still-valid Community session token for a fresh one.
+
+    A token lives `jwt_ttl_seconds` and could not be extended, so a person
+    still at work an hour after signing in was signed out on their next
+    request, losing whatever they had not saved. The page now renews while it
+    is in use. Only a full operator session is renewed (never a 2FA challenge
+    or enrollment token -- `deny_totp_pending_principals` refuses those before
+    this runs -- nor an agent's), only for a member that still exists, and
+    only up to `session_max_seconds` after the original sign-in, which the
+    renewed token carries over unchanged. An edition with its own identity
+    provider renews through it instead, so this answers 404 there.
+    """
+    provider = get_identity_provider()
+    if not isinstance(provider, DevIdentityProvider):
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "sessions are renewed by the identity provider"
+        )
+    if principal.kind != "operator" or principal.scopes:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "only a full session can be renewed")
+    settings = get_settings()
+    token = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+    claims = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
+    signed_in = int(claims.get("auth_time") or claims.get("iat") or 0)
+    now = int(dt.datetime.now(tz=dt.UTC).timestamp())
+    if now - signed_in > settings.session_max_seconds:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session too old; sign in again")
+    member = (
+        await db.execute(
+            select(m.OrgMember).where(
+                m.OrgMember.subject == principal.subject, m.OrgMember.deleted_at.is_(None)
+            )
+        )
+    ).scalar_one_or_none()
+    # The token names the password hash it was signed in with; a member whose
+    # password changed since (or who has none now) signs in again.
+    if (
+        member is None
+        or member.password_hash is None
+        or claims.get("pwd") != password_fingerprint(member.password_hash)
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "sign in again")
+    # The same 2FA decision as a sign-in: once it would demand enrolling a
+    # second factor, a renewal no longer hands out a session that skips it. (A
+    # member who owes a code at sign-in passed it then: that is this session.)
+    if (await second_factor_gate(db, member_id=member.id)).requires_totp_enrollment:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "set up two-factor authentication first")
+    # The role claim is carried over unchanged, as `mint_full_session` does: a
+    # renewal never changes what the session may do, and an assigned role_id
+    # overrides the claim on every request anyway.
+    return SessionRenewResponse(
+        token=mint_password_session(
+            tenant_id=principal.tenant_id,
+            subject=principal.subject,
+            role=principal.role,
+            password_hash=member.password_hash,
+            auth_time=signed_in,
+        )
     )
 
 

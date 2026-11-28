@@ -20,6 +20,7 @@ from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.api.v1.auth import PasswordSessionResponse
 from oc8.auth import Principal, get_identity_provider
+from oc8.auth.provider import mint_password_session
 from oc8.auth.second_factors import audit, lock_member
 from oc8.auth.totp import (
     generate_backup_codes,
@@ -195,7 +196,9 @@ async def refuse_enrol_token_once_enrolled(
         )
 
 
-def mint_full_session(principal: Principal, member_id: uuid.UUID) -> PasswordSessionResponse:
+async def mint_full_session(
+    db: AsyncSession, principal: Principal, member_id: uuid.UUID
+) -> PasswordSessionResponse:
     """Exchange a passed challenge for the real session. Every second-factor
     verify route ends here, so they mint exactly the same token."""
     provider = get_identity_provider()
@@ -208,8 +211,12 @@ def mint_full_session(principal: Principal, member_id: uuid.UUID) -> PasswordSes
     # with the challenge token's own role claim preserves that --
     # `org_member.role_id`'s override still applies on the NEXT request
     # exactly as it always does, unaffected by anything here.
-    token = provider.mint(
-        tenant_id=principal.tenant_id, subject=principal.subject, role=principal.role
+    member = await db.get(m.OrgMember, member_id)
+    token = mint_password_session(
+        tenant_id=principal.tenant_id,
+        subject=principal.subject,
+        role=principal.role,
+        password_hash=member.password_hash if member is not None else None,
     )
     new_principal = provider.verify(token)
     return PasswordSessionResponse(token=token, principal=new_principal, member_id=str(member_id))
@@ -414,7 +421,7 @@ async def totp_verify(
 
     await db.commit()
 
-    return mint_full_session(principal, member_id)
+    return await mint_full_session(db, principal, member_id)
 
 
 class TotpStatusResponse(CamelModel):

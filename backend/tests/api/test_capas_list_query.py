@@ -176,9 +176,13 @@ async def test_list_available_bounds_limit_like_its_siblings(plugins_root: Path)
                 await c.get("/api/v1/capas/available?limit=100000", headers=_h(tenant))
             ).status_code == 422
             assert (
+                await c.get("/api/v1/capas/available?limit=1001", headers=_h(tenant))
+            ).status_code == 422
+            assert (
                 await c.get("/api/v1/capas/available?offset=-1", headers=_h(tenant))
             ).status_code == 422
             # The bound is a ceiling, not a narrowing: the real page still works.
-            ok = await c.get("/api/v1/capas/available?limit=200", headers=_h(tenant))
+            # The Capas page asks for the whole catalog in one page.
+            ok = await c.get("/api/v1/capas/available?limit=1000", headers=_h(tenant))
             assert ok.status_code == 200, ok.text
             assert ok.json()["totalCount"] == 3

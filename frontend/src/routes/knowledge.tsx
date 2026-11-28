@@ -62,6 +62,7 @@ import {
 } from "@/lib/knowledge-connector-hooks";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { syncInFlight } from "@/lib/sync-status";
 import { useT } from "@/lib/i18n";
 import { useMay } from "@/lib/governance-hooks";
 import { useConfirm } from "@/hooks/use-confirm";
@@ -397,11 +398,14 @@ export function SourcesTab({
                 <div className="mt-4 flex items-center gap-2">
                   {s.connected ? (
                     <>
-                      {activeJob?.sourceId === s.id && polledJob && (
+                      {activeJob?.sourceId === s.id && polledJob ? (
                         <JobStatusChip status={polledJob.status} />
+                      ) : (
+                        syncInFlight(s) &&
+                        s.latestJobStatus && <JobStatusChip status={s.latestJobStatus} />
                       )}
                       <button
-                        disabled={busy}
+                        disabled={busy || syncInFlight(s)}
                         onClick={() => {
                           if (!kbForSource) {
                             toast.error("Create a knowledge base first", {
@@ -1141,7 +1145,12 @@ export function KbDetailDrawer({ kbId, onClose }: { kbId: string; onClose: () =>
                 key={s.id}
                 className="flex items-center justify-between gap-2 rounded-md border border-border bg-panel/60 px-3 py-2 text-xs"
               >
-                <span className="truncate">{s.name}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate">{s.name}</span>
+                  {syncInFlight(s) && s.latestJobStatus && (
+                    <JobStatusChip status={s.latestJobStatus} />
+                  )}
+                </span>
                 <button
                   type="button"
                   disabled={unlinkSource.isPending}

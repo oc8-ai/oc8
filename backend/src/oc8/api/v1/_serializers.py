@@ -704,7 +704,9 @@ def agent_version_to_dto(
 
 
 def datasource_to_dto(
-    d: m.DataSource, last_job_stats: dict[str, Any] | None = None
+    d: m.DataSource,
+    last_job_stats: dict[str, Any] | None = None,
+    latest_job: tuple[uuid.UUID, str] | None = None,
 ) -> DataSourceDTO:
     cfg: dict[str, Any] = d.config or {}
     stats = last_job_stats or {}
@@ -727,6 +729,8 @@ def datasource_to_dto(
         last_sync_error=d.last_sync_error,
         last_sync_skipped=skipped if isinstance(skipped, dict) and skipped else None,
         last_sync_notes=notes if isinstance(notes, list) and notes else None,
+        latest_job_id=str(latest_job[0]) if latest_job else None,
+        latest_job_status=latest_job[1] if latest_job else None,
         deleted_at=d.deleted_at.isoformat() if d.deleted_at else None,
         config=cfg,
     )

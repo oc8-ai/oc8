@@ -82,8 +82,12 @@ class WebsiteConnector:
             visited.add(url)
             try:
                 text, ctype = await safe_fetch(url)
-            except (ConnectorError, httpx.HTTPError):
-                # One unreachable page is skipped, not the whole sync.
+            except (ConnectorError, httpx.HTTPError) as exc:
+                if url == urldefrag(start).url:
+                    # Without the start page there is nothing to crawl: say so,
+                    # or the sync "succeeds" with 0 documents and no reason.
+                    raise ConnectorError(f"could not fetch {start}: {exc}") from exc
+                # One unreachable page further in is skipped, not the whole sync.
                 continue
             fetched += 1
             h = hashlib.sha256(text.encode()).hexdigest()

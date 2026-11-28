@@ -18,6 +18,7 @@ import { LanguageProvider, useT } from "../lib/i18n";
 import { LiveUpdatesProvider } from "../lib/live/provider";
 import { hasDevSession, hasCommunitySession } from "../lib/api";
 import { DevSignIn } from "../components/dev-sign-in";
+import { rememberReturnPath } from "../lib/return-path";
 
 const AUTH_CONFIG_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8099/api/v1";
@@ -133,6 +134,7 @@ function AuthGate({ children }: { children: ReactNode }) {
         typeof window !== "undefined" && GATE_PUBLIC_ROUTES.has(window.location.pathname);
       if (!onPublicRoute) {
         if (typeof window !== "undefined") {
+          rememberReturnPath(window.location.pathname, window.location.search);
           window.location.href = "/login";
         }
         return (
