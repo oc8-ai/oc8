@@ -587,6 +587,9 @@ msgstr ""
 msgid "Answer it"
 msgstr ""
 
+msgid "Answer limit per step (tokens)"
+msgstr ""
+
 msgid "Answer sent"
 msgstr ""
 
@@ -2675,6 +2678,9 @@ msgstr ""
 msgid "Every save is kept — nothing is pruned."
 msgstr ""
 
+msgid "Every step sends the whole conversation again -- instructions, skills, the tool list and every earlier result -- so input tokens add up with each step."
+msgstr ""
+
 msgid "Everyone"
 msgstr ""
 
@@ -3053,7 +3059,7 @@ msgstr ""
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr ""
 
-msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
+msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited)."
 msgstr ""
 
 msgid "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too."
@@ -3147,6 +3153,9 @@ msgid "Input"
 msgstr ""
 
 msgid "Input / 1M"
+msgstr ""
+
+msgid "Input and output tokens over every step of one run. The run stops before the next step once it has used this many. A run also stops when it keeps making the same call with the same arguments. Blank inherits the framework default (no limit unless the operator set one)."
 msgstr ""
 
 msgid "Input tokens"
@@ -3588,9 +3597,6 @@ msgid "Max steps must be a positive whole number"
 msgstr ""
 
 msgid "Max steps per run"
-msgstr ""
-
-msgid "Max tokens"
 msgstr ""
 
 msgid "Max tokens must be a positive number"
@@ -6080,6 +6086,9 @@ msgstr ""
 msgid "The agent's runtime cannot run skills."
 msgstr ""
 
+msgid "The answer limit caps how long one answer of the model may be -- it is not a budget for the run. Every step sends the whole conversation again (instructions, skills, the tool list and every earlier result), so a run uses far more tokens than this. To cap a run, set a token limit per run below."
+msgstr ""
+
 msgid "The answer was not stopped. Try again."
 msgstr ""
 
@@ -6336,6 +6345,9 @@ msgid "The text contains a credential. Remove it and set it up under Credentials
 msgstr ""
 
 msgid "The timeline didn't load. Reload the page to try again."
+msgstr ""
+
+msgid "The token limit per run must be a positive whole number"
 msgstr ""
 
 msgid "The update changed the setup form -- click Enable to review and confirm it."
@@ -6732,6 +6744,9 @@ msgid "Todos"
 msgstr ""
 
 msgid "Token Budgets (live)"
+msgstr ""
+
+msgid "Token limit per run"
 msgstr ""
 
 msgid "Token spend across agents and departments — metered by the platform."

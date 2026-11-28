@@ -660,6 +660,7 @@ async def _agent_detail_dto(
         # Top-level key, unlike the four sampling fields above -- see
         # engine._max_steps and switch_model in agents_write.py.
         max_steps=(agent.definition or {}).get("max_steps"),
+        max_run_tokens=(agent.definition or {}).get("max_run_tokens"),
         autonomy=autonomy_of(agent.definition),
         autonomy_grants=autonomy_grants_of(agent.definition),
         current_version_id=(

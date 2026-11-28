@@ -232,6 +232,58 @@ async def test_agent_max_steps_override_persists_independently_and_clears_on_zer
             assert detail.json()["maxSteps"] is None
 
 
+async def test_agent_run_token_limit_persists_independently_and_clears_on_zero(
+    app_session: AppSessionFactory,
+) -> None:
+    """agent.definition["max_run_tokens"] -- read by oc8.agent.run_limits, a
+    top-level key like max_steps, and the same "absent leaves it, 0 clears it"
+    convention."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        department = m.Department(tenant_id=tenant, name=f"D-{uuid.uuid4().hex}", frame={})
+        model = m.ModelConfig(
+            tenant_id=tenant, provider="anthropic", model="claude-sonnet-5", locality="cloud"
+        )
+        db.add_all([department, model])
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=department.id, name="Capped", model_config_id=model.id
+        )
+        db.add(agent)
+        await db.flush()
+        agent_id, model_id = agent.id, model.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            url = f"/api/v1/agents/{agent_id}/model-config"
+            detail = await client.get(f"/api/v1/agents/{agent_id}", headers=headers)
+            assert detail.json()["maxRunTokens"] is None
+
+            r = await client.patch(
+                url,
+                json={"modelConfigId": str(model_id), "maxRunTokens": 200_000, "maxSteps": 40},
+                headers=headers,
+            )
+            assert r.status_code == 200, r.text
+            r = await client.patch(
+                url, json={"modelConfigId": str(model_id), "maxSteps": 50}, headers=headers
+            )
+            assert r.status_code == 200, r.text
+            detail = await client.get(f"/api/v1/agents/{agent_id}", headers=headers)
+            assert detail.json()["maxRunTokens"] == 200_000
+            assert detail.json()["maxSteps"] == 50
+
+            r = await client.patch(
+                url, json={"modelConfigId": str(model_id), "maxRunTokens": 0}, headers=headers
+            )
+            assert r.status_code == 200, r.text
+            detail = await client.get(f"/api/v1/agents/{agent_id}", headers=headers)
+            assert detail.json()["maxRunTokens"] is None
+
+
 async def test_non_admin_cannot_switch_agent_model(app_session: AppSessionFactory) -> None:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     async with app_session(tenant) as db:

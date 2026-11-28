@@ -375,6 +375,8 @@ async def test_the_body_never_carries_the_raw_error(
             "model_error",
         ),
         ({"output": "Reached step limit."}, "step_limit"),
+        ({"output": "Reached token limit."}, "step_limit"),
+        ({"output": "Stopped: the same call kept repeating without progress."}, "step_limit"),
         ({"output": "I could not finish."}, "error"),
         # reclaim / reconciler: nobody reported in
         ({"error": "lease lost: worker died mid-run"}, "error"),

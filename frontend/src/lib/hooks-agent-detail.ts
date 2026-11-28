@@ -73,6 +73,9 @@ export interface AgentDetail {
   // null means "inherit settings.agent_max_steps", not a literal framework
   // default value.
   maxSteps: number | null;
+  // Token limit of one run (definition.max_run_tokens, oc8.agent.run_limits);
+  // null inherits the framework default. Absent on older servers.
+  maxRunTokens?: number | null;
   // How far the agent acts before asking, and the risk tiers it may then act
   // on unasked (definition.autonomy / b5_grants, b_approval.posture). Optional
   // so fixtures that predate them read as the default.

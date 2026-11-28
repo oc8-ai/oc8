@@ -18,10 +18,12 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.run_limits import NO_PROGRESS_OUTPUT, TOKEN_LIMIT_OUTPUT
 from oc8.connections.acting import resolve_acting_person
 from oc8.notifications.service import Localized, notify
 
 logger = logging.getLogger(__name__)
+
 
 FailureCategory = Literal["connection_required", "step_limit", "model_error", "error"]
 
@@ -33,8 +35,8 @@ CATEGORY_TEXT: dict[FailureCategory, Localized] = {
         "Zuerst muss eine Verbindung eingerichtet werden.",
     ),
     "step_limit": (
-        "It reached its step limit.",
-        "Das Schrittlimit wurde erreicht.",
+        "It reached its step or token limit, or kept repeating the same call.",
+        "Das Schritt- oder Tokenlimit wurde erreicht, oder derselbe Aufruf wiederholte sich.",
     ),
     "model_error": (
         "The language model could not answer.",
@@ -90,7 +92,7 @@ _MODEL_ERRORS = (
     "SubscriptionModelNotManualOnly(",
     "EmbeddingUnavailable(",
 )
-_STEP_LIMIT_OUTPUTS = ("Reached step limit.",)
+_STEP_LIMIT_OUTPUTS = ("Reached step limit.", TOKEN_LIMIT_OUTPUT, NO_PROGRESS_OUTPUT)
 _MODEL_OUTPUTS = (
     "Auto model router misconfigured:",
     "The model used its whole answer budget",

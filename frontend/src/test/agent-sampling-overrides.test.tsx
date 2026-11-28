@@ -97,10 +97,39 @@ describe("AssignedModelPanel sampling overrides", () => {
     expect(screen.queryByText("Effort")).toBeNull();
   });
 
-  it("shows Temperature and Max tokens regardless of provider", () => {
+  it("shows Temperature and the answer limit regardless of provider", () => {
     renderPanel({ ...AGENT, modelConfigId: "m-ollama" });
     expect(screen.getByText("Temperature")).toBeInTheDocument();
-    expect(screen.getByText("Max tokens")).toBeInTheDocument();
+    expect(screen.getByText("Answer limit per step (tokens)")).toBeInTheDocument();
+  });
+
+  it("says the answer limit is per step and does not cap what a run costs", () => {
+    renderPanel();
+    expect(screen.getByText(/not a budget for the run/i)).toBeInTheDocument();
+  });
+
+  it("pre-fills and saves the token limit per run", () => {
+    switchModelMutate.mockReset();
+    renderPanel({ ...AGENT, maxRunTokens: 250000 } as AgentDetail);
+    const field = screen.getByLabelText("Token limit per run");
+    expect(field).toHaveValue("250000");
+    fireEvent.change(field, { target: { value: "100000" } });
+    fireEvent.click(screen.getByRole("button", { name: /save sampling settings/i }));
+    expect(switchModelMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ maxRunTokens: 100000 }),
+      expect.anything(),
+    );
+  });
+
+  it("clears the token limit per run back to inherit when emptied", () => {
+    switchModelMutate.mockReset();
+    renderPanel({ ...AGENT, maxRunTokens: 250000 } as AgentDetail);
+    fireEvent.change(screen.getByLabelText("Token limit per run"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /save sampling settings/i }));
+    expect(switchModelMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ maxRunTokens: null }),
+      expect.anything(),
+    );
   });
 
   it("pre-fills fields from the agent's existing overrides", () => {
