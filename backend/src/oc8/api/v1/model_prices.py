@@ -17,6 +17,7 @@ from oc8 import models as m
 from oc8.api.deps import DbSession, require_permission
 from oc8.authz.permissions import MANAGE, MODEL, VIEW, perm
 from oc8.config import get_settings
+from oc8.metering.pricing import normalize_model
 from oc8.schemas.dto import ModelPriceDTO
 from oc8.schemas.requests import ModelPriceWrite
 
@@ -85,7 +86,8 @@ async def price_history(
             await db.execute(
                 select(m.ModelPrice)
                 .where(
-                    m.ModelPrice.provider == provider, m.ModelPrice.model_pattern == model_pattern
+                    m.ModelPrice.provider == provider,
+                    m.ModelPrice.model_pattern.in_({model_pattern, normalize_model(model_pattern)}),
                 )
                 .order_by(m.ModelPrice.effective_from.desc())
             )
@@ -109,7 +111,10 @@ async def create_price_version(body: ModelPriceWrite, db: DbSession) -> ModelPri
     # this UUID column; left unset until callers carry a real actor id.
     row = m.ModelPrice(
         provider=body.provider,
-        model_pattern=body.model_pattern,
+        # Stored in the form it is matched in (`pricing._norm`), so the table
+        # shows the one key a price applies to and two spellings of the same
+        # model are one price, not two rows.
+        model_pattern=normalize_model(body.model_pattern),
         price_in_usd_per_1m=body.price_in_usd_per_1m,
         price_out_usd_per_1m=body.price_out_usd_per_1m,
     )
