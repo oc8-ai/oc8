@@ -965,6 +965,11 @@ async def switch_model(
             definition["max_steps"] = body.max_steps
         else:
             definition.pop("max_steps", None)
+    if "max_run_tokens" in body.model_fields_set:
+        if body.max_run_tokens is not None and body.max_run_tokens > 0:
+            definition["max_run_tokens"] = body.max_run_tokens
+        else:
+            definition.pop("max_run_tokens", None)
     agent.definition = definition
     await db.flush()
     await append_event(

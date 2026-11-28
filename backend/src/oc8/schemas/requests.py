@@ -174,6 +174,11 @@ class ModelConfigRequest(CamelModel):
     #: None/absent leaves the agent's existing override untouched; 0 or a
     #: negative number clears it back to inheriting settings.agent_max_steps.
     max_steps: int | None = None
+    #: Per-agent token limit for one run (input + output over every step, read
+    #: by oc8.agent.run_limits), written to agent.definition["max_run_tokens"].
+    #: Same convention as max_steps: absent leaves it, 0 or less clears it back
+    #: to settings.agent_max_run_tokens.
+    max_run_tokens: int | None = None
 
 
 class AutonomyRequest(CamelModel):

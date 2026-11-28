@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # backstop -- it is just checked once per run, not per step, so this is
     # deliberately a large finite number, not literal infinity.
     agent_max_steps: int = 200
+    # Tokens (input + output, every step) one run may use before it stops;
+    # an agent's `definition["max_run_tokens"]` overrides it. 0 is no limit.
+    # See oc8.agent.run_limits.
+    agent_max_run_tokens: int = 0
 
     # Stranded queued runs (oc8.runtime.reconcile.recover_stranded_runs). A run
     # is committed as `queued` BEFORE its stream entry is published, so a crash

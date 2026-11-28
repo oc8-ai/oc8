@@ -120,6 +120,7 @@ from oc8.agent.offering import (
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.run_files import RunFiles, bind_run_files
+from oc8.agent.run_limits import stop_reason
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
@@ -1562,6 +1563,37 @@ async def run_agent(
             # continuation (formerly tracked here as todo_continue_rounds) now
             # runs through stages/d_todo.py's harness stage.
             for steps in range(1, max_steps + 1):
+                # The run's token limit and a call repeated without progress
+                # stop it before the next model call, the same way the step
+                # budget does below -- and the same way the isolated runtime's
+                # /step does (oc8.agent.run_limits).
+                early_stop = stop_reason(pinned["definition"], step_timings, tool_trace)
+                if early_stop is not None:
+                    task.state = "done"
+                    await maybe_checkpoint(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent.id,
+                        task_id=task.id,
+                        anchor=anchor,
+                        tool_trace_delta=checkpoint_trace_delta,
+                        tokens_since_checkpoint=tokens_since_checkpoint,
+                        force=True,
+                        contains_restricted=contains_restricted,
+                    )
+                    await dispatch_claude_event(tenant_id, "Stop", _hook_ctx())
+                    return RunResult(
+                        task.id,
+                        agent.id,
+                        "done",
+                        early_stop,
+                        tool_trace,
+                        steps - 1,
+                        pending_runs,
+                        rendered_components,
+                        todos,
+                        step_timings,
+                    )
                 # C3: the step stamp on this turn's shaped tool output reads this.
                 harness.state.step_no = steps
                 if steps == 1 and server is not None and run_id is not None:

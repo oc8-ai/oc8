@@ -891,6 +891,9 @@ class AgentDetailDTO(AgentDTO):
     #: ["max_steps"], a top-level key -- see engine._max_steps). None means
     #: "inherit settings.agent_max_steps", not a framework default value.
     max_steps: int | None = None
+    #: Token limit of one run (agent.definition["max_run_tokens"], see
+    #: oc8.agent.run_limits). None means "inherit settings.agent_max_run_tokens".
+    max_run_tokens: int | None = None
     #: `definition["autonomy"]` and `["b5_grants"]` of the working copy: how
     #: far the agent acts before asking, and the risk tiers it may act on
     #: unasked (`b_approval.posture`). See `PUT /agents/{id}/autonomy`.

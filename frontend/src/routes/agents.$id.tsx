@@ -146,6 +146,7 @@ import { StatCard } from "@/components/stat-card";
 import { formatMs } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useLang, useT } from "@/lib/i18n";
+import { formatTokens } from "@/lib/run-model-steps";
 import { useMayInDepartment, useMayManageAgent } from "@/lib/governance-hooks";
 import { thresholdField, valueSpecByName } from "@/lib/value-spec";
 import { useConfirm } from "@/hooks/use-confirm";
@@ -1342,6 +1343,9 @@ export function AssignedModelPanel({
   const [effort, setEffort] = useState(agent.effort ?? "");
   const [rawParams, setRawParams] = useState<RawParamPair[]>(() => extraToPairs(agent.extra));
   const [maxSteps, setMaxSteps] = useState(agent.maxSteps != null ? String(agent.maxSteps) : "");
+  const [maxRunTokens, setMaxRunTokens] = useState(
+    agent.maxRunTokens != null ? String(agent.maxRunTokens) : "",
+  );
   // Route param change remounts this whole page in the common case, but
   // nothing here guarantees it -- a prior bug in this exact codebase (the
   // Chat window carrying a previous agent's session across a switch) showed
@@ -1353,11 +1357,19 @@ export function AssignedModelPanel({
     setEffort(agent.effort ?? "");
     setRawParams(extraToPairs(agent.extra));
     setMaxSteps(agent.maxSteps != null ? String(agent.maxSteps) : "");
+    setMaxRunTokens(agent.maxRunTokens != null ? String(agent.maxRunTokens) : "");
     // agent.extra is a fresh object reference on every fetch; depending on it
     // directly would re-run this on every render and clobber in-progress
     // edits, so this re-syncs on agent identity (agent.id) instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent.id, agent.temperature, agent.maxTokens, agent.effort, agent.maxSteps]);
+  }, [
+    agent.id,
+    agent.temperature,
+    agent.maxTokens,
+    agent.effort,
+    agent.maxSteps,
+    agent.maxRunTokens,
+  ]);
 
   function saveSamplingOverrides() {
     if (!agent.modelConfigId) return;
@@ -1389,6 +1401,17 @@ export function AssignedModelPanel({
       );
       return;
     }
+    const trimmedRunTokens = maxRunTokens.trim();
+    const parsedRunTokens = trimmedRunTokens ? Number(trimmedRunTokens) : null;
+    if (parsedRunTokens !== null && (!Number.isInteger(parsedRunTokens) || parsedRunTokens < 1)) {
+      toast.error(
+        t(
+          "The token limit per run must be a positive whole number",
+          "Das Token-Limit pro Lauf muss eine positive Ganzzahl sein",
+        ),
+      );
+      return;
+    }
     switchModel.mutate(
       {
         agentId: agent.id,
@@ -1401,6 +1424,7 @@ export function AssignedModelPanel({
         effort: showEffort ? effort.trim() || null : undefined,
         extra: showRawParams ? (pairsToExtra(rawParams) ?? null) : undefined,
         maxSteps: parsedSteps,
+        maxRunTokens: parsedRunTokens,
       },
       {
         onSuccess: () =>
@@ -1503,7 +1527,7 @@ export function AssignedModelPanel({
             </label>
             <label className="block">
               <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                {t("Max tokens", "Max. Tokens")}
+                {t("Answer limit per step (tokens)", "Antwortlimit pro Schritt (Token)")}
               </span>
               <input
                 type="text"
@@ -1534,6 +1558,12 @@ export function AssignedModelPanel({
               </div>
             )}
           </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            {t(
+              "The answer limit caps how long one answer of the model may be -- it is not a budget for the run. Every step sends the whole conversation again (instructions, skills, the tool list and every earlier result), so a run uses far more tokens than this. To cap a run, set a token limit per run below.",
+              "Das Antwortlimit begrenzt, wie lang eine einzelne Antwort des Modells sein darf -- es ist kein Budget für den Lauf. Jeder Schritt schickt das ganze Gespräch erneut (Anweisungen, Skills, die Tool-Liste und alle bisherigen Ergebnisse), daher verbraucht ein Lauf weit mehr Token. Um einen Lauf zu begrenzen, setze unten ein Token-Limit pro Lauf.",
+            )}
+          </p>
           {showRawParams && (
             <div className="mt-3">
               <RawParamsEditor pairs={rawParams} onChange={setRawParams} disabled={!mayManage} />
@@ -1556,8 +1586,29 @@ export function AssignedModelPanel({
             </label>
             <p className="mt-1 text-[11px] text-muted-foreground">
               {t(
-                "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run).",
-                "Wie viele Tool-Schritte dieser Agent pro Lauf ausführen darf, bevor er stoppt. Leer übernimmt den Framework-Standard (aktuell hoch, aber nicht unbegrenzt -- Budget-/Token-Metering wird nur einmal pro Lauf geprüft).",
+                "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited).",
+                "Wie viele Tool-Schritte dieser Agent pro Lauf ausführen darf, bevor er stoppt. Leer übernimmt den Framework-Standard (aktuell hoch, aber nicht unbegrenzt).",
+              )}
+            </p>
+            <label className="mt-3 block max-w-[calc(50%-0.375rem)]">
+              <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t("Token limit per run", "Token-Limit pro Lauf")}
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                aria-label={t("Token limit per run", "Token-Limit pro Lauf")}
+                placeholder={t("Framework default", "Framework-Standard")}
+                value={maxRunTokens}
+                disabled={!mayManage}
+                onChange={(e) => setMaxRunTokens(e.target.value)}
+                className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-60"
+              />
+            </label>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {t(
+                "Input and output tokens over every step of one run. The run stops before the next step once it has used this many. A run also stops when it keeps making the same call with the same arguments. Blank inherits the framework default (no limit unless the operator set one).",
+                "Eingabe- und Ausgabe-Token über alle Schritte eines Laufs. Der Lauf stoppt vor dem nächsten Schritt, sobald er so viele verbraucht hat. Ein Lauf stoppt außerdem, wenn er immer wieder denselben Aufruf mit denselben Argumenten macht. Leer übernimmt den Framework-Standard (ohne Limit, sofern der Betreiber keins gesetzt hat).",
               )}
             </p>
           </div>
@@ -2719,6 +2770,7 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
         <span className="rounded-md border border-border bg-background/40 px-2 py-1 font-mono">
           {t("run", "Lauf")} {run.id.slice(0, 8)}
         </span>
+        <RunTokenTotal stepTimings={run.stepTimings} />
         {run.phase && !isStartPhase(run.phase) && (
           <span className="rounded-md border border-border bg-background/40 px-2 py-1">
             {t("phase", "Phase")}: {phaseLabel(run.phase, t)}
@@ -2946,31 +2998,100 @@ function RunTodoList({ todos }: { todos: RunTodoDTO[] }) {
   );
 }
 
-function ToolCallRow({ call }: { call: Record<string, unknown> }) {
+/** `{ model: "calendar.event", limit: 80 }` on one line, for a row. */
+function argumentsInline(args: unknown): string {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return "";
+  return Object.entries(args as Record<string, unknown>)
+    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+    .join(", ");
+}
+
+function asText(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+// One call of a run: what it asked for (`arguments`, which both runtimes
+// write) and what came back. It read `input`, which no runtime writes, and
+// fell back to the whole entry as JSON -- so a person never saw the request.
+export function ToolCallRow({ call }: { call: Record<string, unknown> }) {
+  const [open, setOpen] = useState(false);
   const name =
     (call.tool as string | undefined) ??
     (call.name as string | undefined) ??
     (call.toolName as string | undefined) ??
     "tool call";
-  const status = (call.status as string | undefined) ?? (call.state as string | undefined);
-  const detail =
-    (call.output as string | undefined) ??
-    (call.result as string | undefined) ??
-    (call.error as string | undefined) ??
-    (typeof call.input === "string" ? call.input : undefined);
+  const status = (call.state as string | undefined) ?? (call.status as string | undefined);
+  const args = call.arguments ?? call.input;
+  const inline = typeof args === "string" ? args : argumentsInline(args);
+  const result = asText(call.result) ?? asText(call.output) ?? asText(call.error);
   return (
-    <div className="flex flex-wrap items-start gap-2 border-b border-border/50 py-1 last:border-0">
-      <Wrench className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
-      <span className="font-medium text-foreground/90">{name}</span>
-      {status && (
-        <span className="rounded border border-border px-1 text-[10px] uppercase text-muted-foreground">
-          {status}
-        </span>
+    <div className="border-b border-border/50 py-1 last:border-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full flex-wrap items-start gap-2 text-left"
+      >
+        {open ? (
+          <ChevronDown className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+        )}
+        <Wrench className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
+        <span className="font-medium text-foreground/90">{name}</span>
+        {status && (
+          <span className="rounded border border-border px-1 text-[10px] uppercase text-muted-foreground">
+            {status}
+          </span>
+        )}
+        {inline && <span className="min-w-0 flex-1 truncate text-muted-foreground">{inline}</span>}
+      </button>
+      {!open && result && <div className="truncate pl-10 text-muted-foreground/80">→ {result}</div>}
+      {open && (
+        <div className="space-y-1 pl-10 pt-1">
+          <pre className="whitespace-pre-wrap break-all text-muted-foreground">
+            {typeof args === "string" ? args : JSON.stringify(args ?? {}, null, 2)}
+          </pre>
+          {result && (
+            <pre className="whitespace-pre-wrap break-all text-foreground/80">→ {result}</pre>
+          )}
+        </div>
       )}
-      <span className="min-w-0 flex-1 truncate text-muted-foreground">
-        {detail ?? JSON.stringify(call)}
-      </span>
     </div>
+  );
+}
+
+// What the whole run used, summed over its steps. Each step sends the whole
+// conversation again, so input tokens grow with every step -- the number that
+// surprises people, said where they see it.
+export function RunTokenTotal({
+  stepTimings,
+}: {
+  stepTimings: Array<Record<string, unknown>> | undefined;
+}) {
+  const t = useT();
+  const { lang } = useLang();
+  const steps = (stepTimings ?? []).filter(
+    (s) => typeof s.tokensIn === "number" || typeof s.tokensOut === "number",
+  );
+  if (steps.length === 0) return null;
+  const sum = (key: "tokensIn" | "tokensOut") =>
+    steps.reduce((total, s) => total + (typeof s[key] === "number" ? (s[key] as number) : 0), 0);
+  const n = (value: number) => formatTokens(value, lang);
+  return (
+    <span
+      className="rounded-md border border-border bg-background/40 px-2 py-1"
+      title={t(
+        "Every step sends the whole conversation again -- instructions, skills, the tool list and every earlier result -- so input tokens add up with each step.",
+        "Jeder Schritt schickt das ganze Gespräch erneut -- Anweisungen, Skills, die Tool-Liste und alle bisherigen Ergebnisse --, daher summieren sich die Eingabe-Token mit jedem Schritt.",
+      )}
+    >
+      {t(
+        `tokens: ${n(sum("tokensIn"))} in · ${n(sum("tokensOut"))} out`,
+        `Token: ${n(sum("tokensIn"))} Eingabe · ${n(sum("tokensOut"))} Antwort`,
+      )}
+    </span>
   );
 }
 

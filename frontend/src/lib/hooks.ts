@@ -1811,6 +1811,7 @@ export function useSwitchAgentModel() {
       effort,
       extra,
       maxSteps,
+      maxRunTokens,
     }: {
       agentId: string;
       modelConfigId: string;
@@ -1819,6 +1820,7 @@ export function useSwitchAgentModel() {
       effort?: string | null;
       extra?: Record<string, unknown> | null;
       maxSteps?: number | null;
+      maxRunTokens?: number | null;
     }) =>
       api.patch<AgentDetail>(`/agents/${agentId}/model-config`, {
         modelConfigId,
@@ -1827,6 +1829,7 @@ export function useSwitchAgentModel() {
         ...(effort !== undefined ? { effort } : {}),
         ...(extra !== undefined ? { extra } : {}),
         ...(maxSteps !== undefined ? { maxSteps } : {}),
+        ...(maxRunTokens !== undefined ? { maxRunTokens } : {}),
       }),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: keys.agent(variables.agentId) });

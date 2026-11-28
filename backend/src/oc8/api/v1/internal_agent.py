@@ -110,6 +110,7 @@ from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
 from oc8.agent.run_files import RunFiles
+from oc8.agent.run_limits import stop_reason
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import build_routes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
@@ -1392,7 +1393,19 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     # far above any real budget and must never be the thing that actually
     # stops a run. No model call, no cost, on this path -- ctx["steps"] isn't
     # incremented here, so a resumed/retried request stays idempotent.
-    if int(ctx.get("steps", 0)) >= max_steps:
+    # The run's token limit and a call repeated without progress stop it at
+    # the same point, for the same reasons as in the engine
+    # (oc8.agent.run_limits) -- also with no model call.
+    stop_text = (
+        "Reached step limit."
+        if int(ctx.get("steps", 0)) >= max_steps
+        else stop_reason(
+            pinned["definition"],
+            [t for t in ctx.get("stepTimings") or [] if isinstance(t, dict)],
+            [c for c in ctx.get("toolCalls") or [] if isinstance(c, dict)],
+        )
+    )
+    if stop_text is not None:
         # Close any open step timing left by the previous /step→/tool cycle.
         # Without this, `_t0` + step_wall_ms: 0 survive through /finish; the
         # common next-/step finish never runs on this early exit.
@@ -1424,7 +1437,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 db=db,
                 timing=step_timing_dto(closed_step_timing),
             )
-        return StepResult(done=True, text="Reached step limit.", status_override="done")
+        return StepResult(done=True, text=stop_text, status_override="done")
 
     transcript: list[dict[str, Any]] = list(ctx.get("transcript", []))
     parked_reason = await _finish_elicitation(
