@@ -23,19 +23,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.connections.tool_connection import not_retired
+from oc8.connections.tool_scopes import known_tool_names
 
 
 def connection_tool_names(conn: m.McpConnection) -> frozenset[str]:
-    """The manifest-declared function catalog of `conn`; empty when unknown."""
+    """The manifest-declared function catalog of `conn`, or -- without one --
+    the tools its row knows of; empty when neither is known."""
     cfg = conn.config if isinstance(conn.config, dict) else {}
     plugin_name = cfg.get("_plugin_name")
     connection_key = cfg.get("_connection_key")
-    if not isinstance(plugin_name, str) or not isinstance(connection_key, str):
-        return frozenset()
-    manifest_conn = resolve_tool_pack_connection(plugin_name, connection_key)
-    if manifest_conn is None:
-        return frozenset()
-    scopes = manifest_conn.scopes if isinstance(manifest_conn.scopes, dict) else {}
+    manifest_conn = (
+        resolve_tool_pack_connection(plugin_name, connection_key)
+        if isinstance(plugin_name, str) and isinstance(connection_key, str)
+        else None
+    )
+    if manifest_conn is None or not isinstance(manifest_conn.scopes, dict):
+        # No shipped classification: the tools the row knows of
+        # (`connections.tool_scopes`), so a limit may name them.
+        return frozenset(known_tool_names(conn))
+    scopes = manifest_conn.scopes
     return frozenset({*scopes.get("read", []), *scopes.get("modify", [])})
 
 

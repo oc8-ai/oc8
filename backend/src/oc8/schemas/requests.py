@@ -1149,3 +1149,18 @@ class BoardShareRequest(CamelModel):
 
     member_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
+
+
+#: The longest tool name a model provider takes, and a generous cap on how
+#: many tools one connection may classify.
+_TOOL_NAME_MAX = 128
+_TOOL_SCOPES_MAX = 1000
+
+
+class UpdateToolScopesRequest(CamelModel):
+    read: list[Annotated[str, Field(min_length=1, max_length=_TOOL_NAME_MAX)]] = Field(
+        default_factory=list, max_length=_TOOL_SCOPES_MAX
+    )
+    modify: list[Annotated[str, Field(min_length=1, max_length=_TOOL_NAME_MAX)]] = Field(
+        default_factory=list, max_length=_TOOL_SCOPES_MAX
+    )

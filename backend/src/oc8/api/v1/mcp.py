@@ -31,6 +31,7 @@ from oc8.connections.credential_env import with_login
 from oc8.connections.integrations import integration_for_connection
 from oc8.connections.login import holds_copied_login
 from oc8.connections.tool_connection import not_retired
+from oc8.connections.tool_scopes import classified, known_tool_names, row_tool_scopes
 from oc8.connections.usable import needs_department
 from oc8.credentials.errors import CredentialCheckFailed
 from oc8.credentials.registry import get_credential_type
@@ -47,6 +48,7 @@ from oc8.realtime.emit import publish_mcp_test_log
 from oc8.schemas.dto import (
     ConnectionToolLabelsDTO,
     ConnectionToolNamesDTO,
+    ConnectionToolScopesDTO,
     GuardrailAdjustableDTO,
     GuardrailAttributeDTO,
     GuardrailDTO,
@@ -67,6 +69,7 @@ from oc8.schemas.requests import (
     HttpTestCallRequest,
     UpdateHttpToolsRequest,
     UpdateMcpConnectionRequest,
+    UpdateToolScopesRequest,
 )
 
 router = APIRouter()
@@ -291,8 +294,13 @@ async def get_connection_tool_names(name: str, db: DbSession) -> ConnectionToolN
     if conn is None:
         return ConnectionToolNamesDTO(names=[])
     resolved = _manifest_connection(conn)
-    if resolved is None:
-        return ConnectionToolNamesDTO(names=[])
+    if resolved is None or not isinstance(resolved[0].scopes, dict):
+        # No shipped classification: the one a person gave the row, over the
+        # tools its server offered (`connections.tool_scopes`).
+        own = row_tool_scopes(conn) or {"read": [], "modify": []}
+        return ConnectionToolNamesDTO(
+            names=known_tool_names(conn), read=own["read"], modify=own["modify"]
+        )
     manifest_conn, _guardrail_library, _i18n = resolved
     scopes = manifest_conn.scopes if isinstance(manifest_conn.scopes, dict) else {}
     read = sorted(scopes.get("read", []))
@@ -925,61 +933,22 @@ async def update_http_tools(
     replace_meta = "openapi" in body.model_fields_set
     meta = body.openapi.model_dump(mode="json") if body.openapi is not None else None
 
-    plugin_name = cfg.get("_plugin_name")
-    connection_key = cfg.get("_connection_key", "default")
-    if isinstance(plugin_name, str) and plugin_name:
-        capa = (
-            await db.execute(
-                select(m.Capa)
-                .where(m.Capa.tenant_id == principal.tenant_id, m.Capa.name == plugin_name)
-                .with_for_update()
+    capa, rows = await _lock_plugin_connection(db, conn, principal)
+    if capa is not None:
+        if capa.origin != "custom":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "this connection's tools come from its plugin and cannot be edited here",
             )
-        ).scalar_one_or_none()
-        rows = list(
-            (
-                await db.execute(
-                    select(m.McpConnection)
-                    .where(
-                        m.McpConnection.tenant_id == principal.tenant_id,
-                        m.McpConnection.config["_plugin_name"].astext == plugin_name,
-                        func.coalesce(m.McpConnection.config["_connection_key"].astext, "default")
-                        == connection_key,
-                    )
-                    .order_by(m.McpConnection.id)
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                )
-            ).scalars()
+        await _write_custom_manifest(
+            db,
+            capa,
+            cfg.get("_connection_key", "default"),
+            scopes,
+            tools=tools,
+            meta=meta,
+            replace_meta=replace_meta,
         )
-        if conn not in rows:
-            # Moved to another plugin connection (or deleted) between the read
-            # and the lock: the edit would land on the wrong rows.
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, "this connection changed meanwhile; load it again"
-            )
-        if capa is not None:
-            if capa.origin != "custom":
-                raise HTTPException(
-                    status.HTTP_409_CONFLICT,
-                    "this connection's tools come from its plugin and cannot be edited here",
-                )
-            await _write_custom_manifest(
-                db, capa, connection_key, tools, scopes, meta, replace_meta=replace_meta
-            )
-    else:
-        locked = (
-            await db.execute(
-                select(m.McpConnection)
-                .where(m.McpConnection.id == conn.id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        ).scalar_one_or_none()
-        if locked is None or (locked.config or {}).get("_plugin_name"):
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, "this connection changed meanwhile; load it again"
-            )
-        rows = [locked]
 
     names = [t["name"] for t in tools]
     for row in rows:
@@ -1009,16 +978,194 @@ async def update_http_tools(
     return snapshot
 
 
+
+
+async def _tool_scopes_connection(
+    db: DbSession, conn_id: uuid.UUID, principal: CurrentPrincipal
+) -> m.McpConnection:
+    conn = await db.get(m.McpConnection, conn_id)
+    if conn is None or conn.tenant_id != principal.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
+    return conn
+
+
+async def _plugin_classifies(db: DbSession, conn: m.McpConnection) -> bool:
+    """Whether the connection's tools are classified by someone else: an HTTP
+    API's endpoints editor, or a plugin that is not the tenant's own."""
+    if conn.transport == "manual_http":
+        return True
+    resolved = _manifest_connection(conn)
+    if resolved is not None and isinstance(resolved[0].scopes, dict):
+        return True
+    plugin_name = (conn.config or {}).get("_plugin_name")
+    if isinstance(plugin_name, str) and plugin_name:
+        capa = (
+            await db.execute(
+                select(m.Capa).where(
+                    m.Capa.tenant_id == conn.tenant_id, m.Capa.name == plugin_name
+                )
+            )
+        ).scalar_one_or_none()
+        if capa is not None and capa.origin != "custom":
+            return True
+    return False
+
+
+def _tool_scopes_snapshot(conn: m.McpConnection, *, editable: bool) -> ConnectionToolScopesDTO:
+    own = row_tool_scopes(conn) or {"read": [], "modify": []}
+    return ConnectionToolScopesDTO(
+        connection_id=str(conn.id),
+        name=conn.name,
+        tools=known_tool_names(conn),
+        read=own["read"],
+        modify=own["modify"],
+        editable=editable,
+    )
+
+
+@router.get(
+    "/mcp/connections/{conn_id}/tool-scopes",
+    response_model=ConnectionToolScopesDTO,
+    dependencies=[Depends(require_permission(perm(PLUGIN, MANAGE)))],
+)
+async def get_tool_scopes(
+    conn_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+) -> ConnectionToolScopesDTO:
+    """A connection's tools and which of them only read, for the classification
+    editor. The tools are the ones its server offered at the last successful
+    connection test."""
+    conn = await _tool_scopes_connection(db, conn_id, principal)
+    return _tool_scopes_snapshot(conn, editable=not await _plugin_classifies(db, conn))
+
+
+@router.put(
+    "/mcp/connections/{conn_id}/tool-scopes",
+    response_model=ConnectionToolScopesDTO,
+    dependencies=[Depends(require_permission(perm(PLUGIN, MANAGE)))],
+)
+async def update_tool_scopes(
+    conn_id: uuid.UUID,
+    body: UpdateToolScopesRequest,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> ConnectionToolScopesDTO:
+    """Classify a server's tools as read or modify. A tool left out, or one the
+    server offers later, still requires modify.
+
+    Written to every row of the same plugin connection (one per department)
+    and, for the tenant's own plugin, to its current manifest: an enable
+    rewrites each row from it and a further department is seeded from it, so
+    an edit kept only on one row would revert. Same locks, in the same order,
+    as the HTTP API endpoints editor (`_lock_plugin_connection`).
+    """
+    conn = await _tool_scopes_connection(db, conn_id, principal)
+    if await _plugin_classifies(db, conn):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "this connection's tools are classified by its plugin or its endpoints editor",
+        )
+    known = set(known_tool_names(conn))
+    unknown = sorted({*body.read, *body.modify} - known)
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"not a tool of this connection: {', '.join(unknown[:5])}",
+        )
+    scopes = classified(body.read, body.modify)
+
+    capa, rows = await _lock_plugin_connection(db, conn, principal)
+    if capa is not None:
+        if capa.origin != "custom":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "this connection's tools are classified by its plugin or its endpoints editor",
+            )
+        await _write_custom_manifest(
+            db, capa, (conn.config or {}).get("_connection_key", "default"), scopes
+        )
+    for row in rows:
+        row.scopes = scopes
+    snapshot = _tool_scopes_snapshot(conn, editable=True)
+    await db.commit()
+    return snapshot
+
+async def _lock_plugin_connection(
+    db: DbSession, conn: m.McpConnection, principal: CurrentPrincipal
+) -> tuple[m.Capa | None, list[m.McpConnection]]:
+    """Lock, in this order, the capa row and then every row of the same plugin
+    connection (one per department), by id; an unstamped row is locked alone.
+
+    The capa row is the one mutex for all of a plugin's connections and the
+    order the Copilot's apply of an enable or setup takes (capa, then its
+    rows), so an install of a new version, an enable or another edit of the
+    same plugin waits instead of writing past this one, and unrelated
+    connections are never held. 409 when the connection moved to another
+    plugin connection, or was deleted, between the read and the lock.
+    """
+    cfg = conn.config or {}
+    plugin_name = cfg.get("_plugin_name")
+    connection_key = cfg.get("_connection_key", "default")
+    if isinstance(plugin_name, str) and plugin_name:
+        capa = (
+            await db.execute(
+                select(m.Capa)
+                .where(m.Capa.tenant_id == principal.tenant_id, m.Capa.name == plugin_name)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        rows = list(
+            (
+                await db.execute(
+                    select(m.McpConnection)
+                    .where(
+                        m.McpConnection.tenant_id == principal.tenant_id,
+                        m.McpConnection.config["_plugin_name"].astext == plugin_name,
+                        func.coalesce(m.McpConnection.config["_connection_key"].astext, "default")
+                        == connection_key,
+                    )
+                    .order_by(m.McpConnection.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars()
+        )
+        if conn not in rows:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "this connection changed meanwhile; load it again"
+            )
+        return capa, rows
+    locked = (
+        await db.execute(
+            select(m.McpConnection)
+            .where(m.McpConnection.id == conn.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if locked is None or (locked.config or {}).get("_plugin_name"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "this connection changed meanwhile; load it again"
+        )
+    return None, [locked]
+
 async def _write_custom_manifest(
     db: DbSession,
     capa: m.Capa,
     connection_key: str,
-    tools: list[dict[str, object]],
     scopes: dict[str, list[str]],
-    meta: dict[str, object] | None,
     *,
-    replace_meta: bool,
+    tools: list[dict[str, object]] | None = None,
+    meta: dict[str, object] | None = None,
+    replace_meta: bool = False,
 ) -> None:
+    """Keep an edit in the custom capa's current manifest, so an enable (which
+    rewrites each row from it) or a further department (seeded from it) keeps
+    it too. `tools=None` leaves the connection's HTTP tools as they are.
+
+    An HTTP API's tools exist only in the manifest, so a connection missing
+    from it is a 409. A server's own tools need no manifest entry: an entry
+    that is missing is never rewritten from, so the rows alone hold.
+    """
     version = (
         await db.get(m.CapaVersion, capa.current_version_id)
         if capa.current_version_id is not None
@@ -1036,7 +1183,8 @@ async def _write_custom_manifest(
             continue
         found = True
         entry_cfg = dict(entry.get("config") or {})
-        entry_cfg["http_tools"] = tools
+        if tools is not None:
+            entry_cfg["http_tools"] = tools
         if replace_meta:
             if meta is None:
                 entry_cfg.pop("openapi", None)
@@ -1044,7 +1192,7 @@ async def _write_custom_manifest(
                 entry_cfg["openapi"] = meta
         entry["config"] = entry_cfg
         entry["scopes"] = scopes
-    if not found:
+    if not found and tools is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "this connection is no longer in its plugin's manifest; install it again",
