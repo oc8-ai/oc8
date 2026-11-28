@@ -10,6 +10,8 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
+import { syncInFlight } from "@/lib/sync-status";
 import {
   api,
   ApiError,
@@ -1376,13 +1378,27 @@ export function useCreateGrant() {
   });
 }
 
-export const useDataSources = (params: ListQueryParams = {}) =>
-  useQuery({
+// Each source carries its newest sync job, so the list itself follows a sync
+// in flight -- however it was started (wizard, "Add source", Sync, another
+// tab) and after the page was left -- and stops asking once none is. When one
+// settles the knowledge bases are refreshed too, for their document counts.
+export function useDataSources(params: ListQueryParams = {}, { pollMs = 2000 } = {}) {
+  const qc = useQueryClient();
+  const query = useQuery({
     queryKey: [...keys.sources, params] as const,
     // Unaliased `group_by` on the wire -- see `toQueryString`'s doc comment.
     queryFn: () =>
       api.get<Page<DataSource>>(`/knowledge/sources?${toQueryString(params, "group_by")}`),
+    refetchInterval: (q) => (q.state.data?.items.some(syncInFlight) ? pollMs : false),
   });
+  const inFlight = query.data?.items.some(syncInFlight) ?? false;
+  const wasInFlight = useRef(false);
+  useEffect(() => {
+    if (wasInFlight.current && !inFlight) qc.invalidateQueries({ queryKey: keys.bases });
+    wasInFlight.current = inFlight;
+  }, [inFlight, qc]);
+  return query;
+}
 
 // GET /knowledge/bases/{kb_id}/documents -- an already-existing, unpaginated
 // bare array (list[KnowledgeDocumentDTO] on the wire), untouched by the
@@ -2556,6 +2572,10 @@ export interface UsageDTO {
   /** The parts of tokensIn read from / written to the provider's prompt cache. */
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Tokens (in + out) of models with no price, which providerCostMicros leaves
+   *  out, and those models as "provider/model". */
+  unpricedTokens?: number;
+  unpricedModels?: string[];
   /** The group's display name (agent or department) and, for an agent row, its
    *  department. Set even for a member's personal agent, which the admin's
    *  agent and department lists leave out (its name stays visible, R2). */

@@ -373,11 +373,11 @@ async def list_available(
     # `type` matches the wire field name; DiscoveredPluginDTO.type is the domain field.
     type: str | None = None,
     group_by: str | None = None,
-    # Same bounds as every sibling list route (agents/departments/knowledge/
-    # skills): `limit=0` used to answer 200-with-nothing here while the others
-    # answered 422, and an unbounded `limit` had no ceiling at all. The data
-    # source is a bounded disk scan, so this is consistency, not protection.
-    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    # `limit=0` is refused like on every sibling list route. The ceiling is
+    # higher than theirs: the Capas page filters and counts the WHOLE catalog
+    # in the browser (types, trust, tabs), the source is a bounded disk scan,
+    # and a 200 cap hid a third of a 300-capa catalog with nothing saying so.
+    limit: Annotated[int, Query(ge=1, le=1000)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Page[DiscoveredPluginDTO]:
     """Plugin folders found on disk, each annotated with whether THIS tenant has

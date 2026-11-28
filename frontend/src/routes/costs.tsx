@@ -9,6 +9,7 @@ import {
   Coins,
   Gauge,
   ShieldAlert,
+  TriangleAlert,
   Download,
   Plus,
   RefreshCw,
@@ -271,6 +272,7 @@ function CostsPage() {
             value={formatTokens(totals.inTok + totals.outTok)}
           />
         </div>
+        <UnpricedNotice rows={agentUsage ?? []} />
 
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-md border border-border bg-background/30 px-3 py-2 text-xs">
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
@@ -378,6 +380,35 @@ export function PeriodSwitch({
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** Models with no price cost nothing in the totals above: name them and their
+ *  tokens, so the spend shown is never silently below the provider's bill. */
+export function UnpricedNotice({
+  rows,
+}: {
+  rows: { unpricedTokens?: number; unpricedModels?: string[] }[];
+}) {
+  const t = useT();
+  const tokens = rows.reduce((s, r) => s + (r.unpricedTokens ?? 0), 0);
+  if (tokens <= 0) return null;
+  const models = [...new Set(rows.flatMap((r) => r.unpricedModels ?? []))].sort();
+  return (
+    <div
+      role="status"
+      className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-foreground"
+    >
+      <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+      <span>
+        {t(
+          "{tokens} tokens are not in the spend above because these models have no price: {models}. Add a price under Models → Model pricing.",
+          "{tokens} Token fehlen in den Ausgaben oben, weil diese Modelle keinen Preis haben: {models}. Lege unter Modelle → Modellpreise einen Preis an.",
+        )
+          .replace("{tokens}", formatTokens(tokens))
+          .replace("{models}", models.join(", "))}
+      </span>
     </div>
   );
 }
