@@ -471,6 +471,16 @@ describe("Community login route", () => {
     expect(enrollTotp).not.toHaveBeenCalled();
   });
 
+  it("goes back to the page the session ended on, query and all", async () => {
+    window.sessionStorage.setItem("oc8-return-to", "/agents/a1?tab=config");
+    stubConfigThenLogin({ token: "session-tok" });
+
+    render(<LoginPage />);
+    await submitLoginForm();
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ href: "/agents/a1?tab=config" }));
+  });
+
   it("shows a grace-period nag when totpGraceExpiresAt is present, and still navigates", async () => {
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     stubConfigThenLogin({ token: "session-tok", totpGraceExpiresAt: expiresAt });

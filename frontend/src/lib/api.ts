@@ -182,6 +182,64 @@ export function setSessionRenewer(fn: SessionRenewer | null): void {
   sessionRenewer = fn;
   renewal = null;
   signingOut = null;
+  aheadRenewal = null;
+  aheadRenewalUnsupported = false;
+}
+
+// Renewing AHEAD of expiry. A token lives an hour and a 401 has nothing left to
+// renew it with, so whoever was still at work an hour after signing in -- in the
+// middle of configuring an agent, say -- was signed out on the next request and
+// lost everything unsaved. So once a request succeeds with a token past half
+// its life, it is swapped in the background for a fresh one
+// (`POST /auth/session/renew`, capped server-side at a day after the sign-in).
+// One attempt at a time; a server that does not renew sessions this way (an
+// edition whose identity provider renews them itself) answers 404 and is not
+// asked again.
+let aheadRenewal: Promise<void> | null = null;
+let aheadRenewalUnsupported = false;
+
+function tokenTimes(token: string): { iat: number; exp: number } | null {
+  try {
+    const part = token.split(".")[1];
+    if (!part) return null;
+    const claims = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/"))) as {
+      iat?: unknown;
+      exp?: unknown;
+    };
+    return typeof claims.iat === "number" && typeof claims.exp === "number"
+      ? { iat: claims.iat, exp: claims.exp }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function renewAheadIfAging(token: string): void {
+  if (aheadRenewalUnsupported || aheadRenewal || tokenStore.get() !== token) return;
+  const times = tokenTimes(token);
+  if (!times || Date.now() / 1000 < (times.iat + times.exp) / 2) return;
+  aheadRenewal = (async () => {
+    try {
+      const res = await fetch(`${API_URL}/auth/session/renew`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (res.status === 404) {
+        aheadRenewalUnsupported = true;
+        return;
+      }
+      if (!res.ok) return;
+      const body = (await res.json()) as { token?: unknown };
+      // Only if nothing else replaced or cleared the token meanwhile.
+      if (typeof body.token === "string" && tokenStore.get() === token) {
+        tokenStore.set(body.token);
+      }
+    } catch {
+      // Tried again on the next request; the current token is still good.
+    } finally {
+      aheadRenewal = null;
+    }
+  })();
 }
 
 function renewSession(): Promise<boolean> {
@@ -259,6 +317,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     if (res.status === 401) return signOutExpired();
   }
   if (!res.ok) throw await toError(res);
+  renewAheadIfAging(await getToken().catch(() => token));
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }

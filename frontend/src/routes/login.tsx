@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useT } from "@/lib/i18n";
 import { setCommunityToken } from "@/lib/api";
+import { takeReturnPath } from "@/lib/return-path";
 import { PublicAuthLayout } from "@/components/public-auth-layout";
 import { TotpChallenge } from "@/components/totp-challenge";
 import { SecondFactorEnroll } from "@/components/second-factor";
@@ -52,7 +53,9 @@ export function LoginPage() {
   // request race in and 422 as "already initialized" right after success).
   const celebrateAndNavigate = (to: string) => {
     setCelebrating(true);
-    navigate({ to });
+    // A remembered page (see lib/return-path) can carry a query, which `to`
+    // would take as part of the path; `href` keeps it a query.
+    navigate(to.includes("?") ? { href: to } : { to });
   };
 
   // Check if instance is initialized by attempting to get the singleton org
@@ -215,7 +218,7 @@ export function LoginPage() {
       setCommunityToken(result.token);
       toast.success(t("Logged in successfully", "Erfolgreich angemeldet"));
       setLoading(false);
-      celebrateAndNavigate("/");
+      celebrateAndNavigate(takeReturnPath());
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : t("Login failed", "Anmeldung fehlgeschlagen"),
@@ -232,7 +235,7 @@ export function LoginPage() {
           methods={twoFactorMethods}
           onVerified={(sessionToken) => {
             setCommunityToken(sessionToken);
-            celebrateAndNavigate("/");
+            celebrateAndNavigate(takeReturnPath());
           }}
         />
       </PublicAuthLayout>

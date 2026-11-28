@@ -400,3 +400,68 @@ describe("where the access token is kept", () => {
     await expect(getToken()).resolves.toBe("old-token");
   });
 });
+
+describe("renewing a session that is in use", () => {
+  function jwtWith(iat: number, exp: number): string {
+    const b64 = (o: unknown) =>
+      btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `${b64({ alg: "HS256" })}.${b64({ iat, exp })}.sig`;
+  }
+  const now = () => Math.floor(Date.now() / 1000);
+  const renewCalls = (f: ReturnType<typeof stubFetch>) =>
+    f.mock.calls.filter((c) => String(c[0]).endsWith("/auth/session/renew"));
+
+  it("swaps a token past half its life for a fresh one after a request", async () => {
+    const aging = jwtWith(now() - 2400, now() + 1200);
+    window.localStorage.setItem(COMMUNITY_TOKEN_KEY, aging);
+    const fetchMock = stubFetch((url) =>
+      url.endsWith("/auth/session/renew") ? json(200, { token: "fresh" }) : json(200, {}),
+    );
+
+    await api.get("/me");
+
+    await vi.waitFor(() => expect(window.localStorage.getItem(COMMUNITY_TOKEN_KEY)).toBe("fresh"));
+    expect(authHeader(renewCalls(fetchMock)[0])).toBe(`Bearer ${aging}`);
+  });
+
+  it("leaves a young token alone", async () => {
+    window.localStorage.setItem(COMMUNITY_TOKEN_KEY, jwtWith(now() - 60, now() + 3540));
+    const fetchMock = stubFetch(() => json(200, {}));
+
+    await api.get("/me");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(renewCalls(fetchMock)).toHaveLength(0);
+  });
+
+  it("asks once for a burst of requests", async () => {
+    window.localStorage.setItem(COMMUNITY_TOKEN_KEY, jwtWith(now() - 2400, now() + 1200));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const fetchMock = stubFetch(async (url) => {
+      if (!url.endsWith("/auth/session/renew")) return json(200, {});
+      await gate;
+      return json(200, { token: "fresh" });
+    });
+
+    await Promise.all([api.get("/a"), api.get("/b"), api.get("/c")]);
+    release();
+
+    await vi.waitFor(() => expect(window.localStorage.getItem(COMMUNITY_TOKEN_KEY)).toBe("fresh"));
+    expect(renewCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it("stops asking where the server does not renew sessions", async () => {
+    window.localStorage.setItem(COMMUNITY_TOKEN_KEY, jwtWith(now() - 2400, now() + 1200));
+    const fetchMock = stubFetch((url) =>
+      url.endsWith("/auth/session/renew") ? json(404, {}) : json(200, {}),
+    );
+
+    await api.get("/a");
+    await vi.waitFor(() => expect(renewCalls(fetchMock)).toHaveLength(1));
+    await api.get("/b");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(renewCalls(fetchMock)).toHaveLength(1);
+  });
+});

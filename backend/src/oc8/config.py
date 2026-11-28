@@ -302,6 +302,11 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-secret-change-me-0123456789abcdef"
     jwt_alg: str = "HS256"
     jwt_ttl_seconds: int = 3600
+    # How long after signing in a Community password session may keep being
+    # renewed while it is in use (`POST /auth/session/renew`). Each token
+    # still lives `jwt_ttl_seconds`; this caps the chain, so a stolen token
+    # cannot be kept alive forever and everyone signs in again once a day.
+    session_max_seconds: int = 43200
 
     # Web Push (VAPID key pair). One pair per instance, not a tenant secret.
     # Empty keys disable push sending (checked at send time, not startup).
