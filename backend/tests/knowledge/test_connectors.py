@@ -98,3 +98,35 @@ async def test_website_bounds_fetches_not_emits_on_incremental_recrawl(
 async def test_unknown_connector_raises() -> None:
     with pytest.raises(ConnectorError):
         get_connector("nope")
+
+
+async def test_website_fails_in_words_when_the_start_page_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A start page that cannot be fetched used to end the crawl with nothing
+    and no error, so the sync "succeeded" with 0 documents and nobody knew why."""
+    import oc8.knowledge.connectors.website as w
+
+    async def fake_fetch(url: str, **kw: object) -> tuple[str, str]:
+        raise ConnectorError("HTTP 403")
+
+    monkeypatch.setattr(w, "safe_fetch", fake_fetch)
+    c = get_connector("website")
+    with pytest.raises(ConnectorError, match=r"https://ex\.com/.*HTTP 403"):
+        _ = [d async for d in c.fetch({"url": "https://ex.com/", "maxPages": 3}, None)]
+
+
+async def test_website_still_skips_an_unreachable_page_after_the_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import oc8.knowledge.connectors.website as w
+
+    async def fake_fetch(url: str, **kw: object) -> tuple[str, str]:
+        if url.endswith("/gone"):
+            raise ConnectorError("HTTP 404")
+        return ('<a href="/gone">x</a>home', "text/html")
+
+    monkeypatch.setattr(w, "safe_fetch", fake_fetch)
+    c = get_connector("website")
+    docs = [d async for d in c.fetch({"url": "https://ex.com/", "maxPages": 3}, None)]
+    assert [d.source_uri for d in docs] == ["https://ex.com/"]

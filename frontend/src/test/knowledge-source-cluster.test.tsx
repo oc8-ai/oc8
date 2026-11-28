@@ -57,12 +57,20 @@ const emptyKb = {
   embeddingModel: "local/bge-large",
 };
 
-const linkedSource = {
+const linkedSource: {
+  id: string;
+  kind: string;
+  name: string;
+  connected: boolean;
+  sensitivity: string;
+  latestJobStatus: string | null;
+} = {
   id: "ds-linked",
   kind: "website",
   name: "Marketing site",
   connected: true,
   sensitivity: "internal",
+  latestJobStatus: null,
 };
 
 const unlinkedSource = {
@@ -455,6 +463,16 @@ describe("KbDetailDrawer Sources section", () => {
       { sourceId: "ds-unlinked", kbId: "kb-1" },
       expect.anything(),
     );
+  });
+
+  it("shows a linked source's sync while it is still running, however it was started", () => {
+    linkedSource.latestJobStatus = "running";
+    try {
+      renderWithClient(<KbDetailDrawer kbId="kb-1" onClose={vi.fn()} onSync={vi.fn()} />);
+      expect(screen.getByText("running…")).toBeInTheDocument();
+    } finally {
+      linkedSource.latestJobStatus = null;
+    }
   });
 
   it("does not offer an already-linked source in the add picker", () => {
@@ -929,7 +947,11 @@ const QDRANT_CREDENTIAL_TYPE = {
   ],
 };
 
-const QDRANT_CREDENTIAL = { id: "qdrant-cred-1", name: "Prod Qdrant", credentialType: "qdrant_api" };
+const QDRANT_CREDENTIAL = {
+  id: "qdrant-cred-1",
+  name: "Prod Qdrant",
+  credentialType: "qdrant_api",
+};
 
 describe("BaseWizard connect existing vector index", () => {
   beforeEach(() => {
@@ -937,7 +959,9 @@ describe("BaseWizard connect existing vector index", () => {
     knowledgeVectorIndexesMock.mockReturnValue({ data: [QDRANT_INDEX], isLoading: false });
     credentialsMock.mockImplementation((credentialType?: string) => ({
       data:
-        !credentialType || credentialType === "qdrant_api" ? [QDRANT_CREDENTIAL] : [EXISTING_CREDENTIAL],
+        !credentialType || credentialType === "qdrant_api"
+          ? [QDRANT_CREDENTIAL]
+          : [EXISTING_CREDENTIAL],
     }));
     credentialTypesMock.mockReturnValue({ data: [QDRANT_CREDENTIAL_TYPE, S3_CREDENTIAL_TYPE] });
   });

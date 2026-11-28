@@ -709,7 +709,25 @@ async def list_sources(
             )
         )
         last_stats = {sid: stats for sid, stats in latest.all()}
-    return Page(items=[datasource_to_dto(d, last_stats.get(d.id)) for d in rows], total_count=total)
+        # And each source's newest job in ANY state -- a queued or running one
+        # included -- so the page can show and follow a sync in flight.
+        newest = await db.execute(
+            select(m.IngestionJob.data_source_id, m.IngestionJob.id, m.IngestionJob.status)
+            .where(m.IngestionJob.data_source_id.in_([d.id for d in rows]))
+            .distinct(m.IngestionJob.data_source_id)
+            .order_by(
+                m.IngestionJob.data_source_id,
+                m.IngestionJob.created_at.desc(),
+                m.IngestionJob.id.desc(),
+            )
+        )
+        latest_jobs = {sid: (jid, status) for sid, jid, status in newest.all()}
+    else:
+        latest_jobs = {}
+    return Page(
+        items=[datasource_to_dto(d, last_stats.get(d.id), latest_jobs.get(d.id)) for d in rows],
+        total_count=total,
+    )
 
 
 @router.post(

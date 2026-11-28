@@ -1197,6 +1197,10 @@ export interface DataSource {
   /** Codes the last finished sync noted for the admin (`api_key_recommended`,
    * `scope_emptied`, ...); unknown codes are not shown. */
   lastSyncNotes?: string[] | null;
+  /** The newest sync job of any state, or null before the first: the page
+   * follows a queued or running sync from here, however it was started. */
+  latestJobId?: string | null;
+  latestJobStatus?: "queued" | "running" | "succeeded" | "partial" | "failed" | null;
   /** Set once the source is deleted (`DELETE /knowledge/sources/{id}`) -- this
    * is IRREVERSIBLE (it reduces the source's `KbChunk`s in the same
    * transaction, §12.5.1), so unlike Skill/Agent/Department there is no
