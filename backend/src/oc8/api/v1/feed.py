@@ -169,6 +169,7 @@ async def usage(
     now = datetime.now(UTC)
     price_rows = await active_price_rows(db, as_of=now)
 
+    unpriced_models: dict[str, set[str]] = defaultdict(set)
     totals: dict[str, dict[str, int]] = defaultdict(
         lambda: {
             "tokens_in": 0,
@@ -179,6 +180,7 @@ async def usage(
             "saved_cost": 0,
             "cache_read": 0,
             "cache_write": 0,
+            "unpriced": 0,
         }
     )
     for (
@@ -216,6 +218,9 @@ async def usage(
             else 0
         )
         saved_cost = cost_micros_from_price(price, int(saved_in), int(saved_out)) if price else 0
+        if price is None and int(tokens_in) + int(tokens_out) > 0:
+            totals[key]["unpriced"] += int(tokens_in) + int(tokens_out)
+            unpriced_models[key].add(f"{provider}/{model}")
         totals[key]["tokens_in"] += int(tokens_in)
         totals[key]["tokens_out"] += int(tokens_out)
         totals[key]["cost"] += cost
@@ -237,6 +242,8 @@ async def usage(
             saved_cost_micros=v["saved_cost"],
             cache_read_tokens=v["cache_read"],
             cache_write_tokens=v["cache_write"],
+            unpriced_tokens=v["unpriced"],
+            unpriced_models=sorted(unpriced_models.get(group, ())),
             **names.get(group, {}),
         )
         for group, v in totals.items()

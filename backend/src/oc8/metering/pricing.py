@@ -26,8 +26,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8.models.pricing import ModelPrice
 
 
-def _norm(s: str) -> str:
+def normalize_model(s: str) -> str:
+    """A model name or price pattern in the one form they are compared in:
+    lowercase letters and digits only (`claude-haiku-4-5` -> `claudehaiku45`)."""
     return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+_norm = normalize_model
 
 
 @dataclass(frozen=True)
@@ -72,14 +77,21 @@ def price_as_of(
     (e.g. "gpt4omini" beats "gpt4o", since "gpt4o" is itself a substring of
     "gpt4omini") -- ties broken by the most recent effective_from."""
     n = _norm(model)
+    # The pattern is normalised like the name: the Models page stores what was
+    # typed or picked (`claude-haiku-4-5-20251001`), and compared raw such a
+    # pattern never matched, so its model silently cost nothing.
     candidates = [
-        r
+        (pattern, r)
         for r in rows
-        if r.active and r.provider == provider and r.effective_from <= at and r.model_pattern in n
+        if r.active
+        and r.provider == provider
+        and r.effective_from <= at
+        and (pattern := _norm(r.model_pattern))
+        and pattern in n
     ]
     if not candidates:
         return None
-    best = max(candidates, key=lambda r: (len(r.model_pattern), r.effective_from))
+    _, best = max(candidates, key=lambda c: (len(c[0]), c[1].effective_from))
     return (best.price_in_usd_per_1m, best.price_out_usd_per_1m)
 
 

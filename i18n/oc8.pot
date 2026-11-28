@@ -89,6 +89,9 @@ msgstr ""
 msgid "{name} will send mail and messages to customers and partners without a person approving each one. Guardrails and usage limits still apply, so set a daily limit on each tool that sends, so a mistake can't send hundreds of messages."
 msgstr ""
 
+msgid "{tokens} tokens are not in the spend above because these models have no price: {models}. Add a price under Models → Model pricing."
+msgstr ""
+
 msgid "{tools}: {name} can use it once the department turns it on in its tool settings."
 msgstr ""
 

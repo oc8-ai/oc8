@@ -244,3 +244,44 @@ async def test_usage_requires_budget_view_permission(app_session: AppSessionFact
         h = _headers(tenant, "member")
         resp = await http.get("/api/v1/usage?group_by=department", headers=h)
         assert resp.status_code == 403, resp.text
+
+
+async def test_usage_reports_tokens_of_models_without_a_price(
+    app_session: AppSessionFactory,
+) -> None:
+    """A model with no price costs nothing in the report. Say so, with the
+    tokens and the model, instead of showing a total that silently leaves
+    them out."""
+    tenant = uuid.uuid4()
+    dept_id = uuid.uuid4()
+    async with app_session(tenant) as db:
+        db.add(m.Department(id=dept_id, tenant_id=tenant, name="Ops", goal="", frame={}))
+        db.add(
+            m.ModelPrice(
+                provider="anthropic",
+                model_pattern="claude-sonnet-4",
+                price_in_usd_per_1m=3.0,
+                price_out_usd_per_1m=15.0,
+            )
+        )
+        for model, tin, tout in (("claude-sonnet-4", 1000, 100), ("claude-haiku-4-5", 700, 50)):
+            db.add(
+                m.TokenUsageRecord(
+                    tenant_id=tenant,
+                    request_id=uuid.uuid4(),
+                    model=model,
+                    provider="anthropic",
+                    tokens_in=tin,
+                    tokens_out=tout,
+                    department_id=dept_id,
+                )
+            )
+        await db.commit()
+
+    async with _http() as client:
+        resp = await client.get("/api/v1/usage", headers=_headers(tenant, "org_admin"))
+    assert resp.status_code == 200
+    (row,) = resp.json()
+    assert row["providerCostMicros"] == round(1000 * 3.0 + 100 * 15.0)
+    assert row["unpricedTokens"] == 750
+    assert row["unpricedModels"] == ["anthropic/claude-haiku-4-5"]
