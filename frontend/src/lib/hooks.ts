@@ -2556,6 +2556,10 @@ export interface UsageDTO {
   /** The parts of tokensIn read from / written to the provider's prompt cache. */
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Tokens (in + out) of models with no price, which providerCostMicros leaves
+   *  out, and those models as "provider/model". */
+  unpricedTokens?: number;
+  unpricedModels?: string[];
   /** The group's display name (agent or department) and, for an agent row, its
    *  department. Set even for a member's personal agent, which the admin's
    *  agent and department lists leave out (its name stays visible, R2). */

@@ -75,3 +75,24 @@ def test_a_price_change_does_not_affect_a_report_for_before_the_change() -> None
 def test_deactivated_price_is_not_matched() -> None:
     rows = [PriceRow("anthropic", "claude45sonnet", 3.0, 15.0, _LAST_WEEK, False)]
     assert price_as_of(rows, "anthropic", "claude-sonnet-4-5-20250929", _NOW) is None
+
+
+def test_a_pattern_saved_as_the_model_id_matches_that_model() -> None:
+    """The Models page saves the model id as typed (`claude-haiku-4-5-20251001`).
+    It is compared in the same normalised form as the model name, so a price
+    entered that way applies instead of leaving the model at zero."""
+    rows = [PriceRow("anthropic", "claude-haiku-4-5", 1.0, 5.0, _LAST_WEEK, True)]
+    assert price_as_of(rows, "anthropic", "claude-haiku-4-5-20251001", _NOW) == (1.0, 5.0)
+
+
+def test_a_pattern_with_capitals_and_spaces_matches() -> None:
+    rows = [PriceRow("openai", "GPT 4.1", 2.0, 8.0, _LAST_WEEK, True)]
+    assert price_as_of(rows, "openai", "gpt-4.1", _NOW) == (2.0, 8.0)
+
+
+def test_the_longest_pattern_still_wins_after_normalising() -> None:
+    rows = [
+        PriceRow("openai", "gpt-4o", 2.5, 10.0, _LAST_WEEK, True),
+        PriceRow("openai", "gpt-4o-mini", 0.15, 0.6, _LAST_WEEK, True),
+    ]
+    assert price_as_of(rows, "openai", "gpt-4o-mini-2024-07-18", _NOW) == (0.15, 0.6)

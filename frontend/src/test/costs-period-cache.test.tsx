@@ -14,7 +14,7 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 }));
 
 import { useUsage } from "@/lib/hooks";
-import { InputTokensMetric, PeriodSwitch } from "@/routes/costs";
+import { InputTokensMetric, PeriodSwitch, UnpricedNotice } from "@/routes/costs";
 
 function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
@@ -54,5 +54,30 @@ describe("InputTokensMetric", () => {
   it("says nothing about the cache when none was read", () => {
     render(<InputTokensMetric tokensIn={2_000_000} cacheReadTokens={0} />);
     expect(screen.queryByText(/from cache/)).not.toBeInTheDocument();
+  });
+});
+
+describe("UnpricedNotice", () => {
+  it("names the tokens and models the cost leaves out", () => {
+    render(
+      <UnpricedNotice
+        rows={[
+          { unpricedTokens: 1_200_000, unpricedModels: ["anthropic/claude-haiku-4-5"] },
+          {
+            unpricedTokens: 300_000,
+            unpricedModels: ["anthropic/claude-haiku-4-5", "opaas_ai/odoo-gpt"],
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/1\.50M tokens/)).toBeInTheDocument();
+    expect(screen.getByText(/anthropic\/claude-haiku-4-5, opaas_ai\/odoo-gpt/)).toBeInTheDocument();
+  });
+
+  it("shows nothing when every model has a price", () => {
+    const { container } = render(
+      <UnpricedNotice rows={[{ unpricedTokens: 0, unpricedModels: [] }]} />,
+    );
+    expect(container).toBeEmptyDOMElement();
   });
 });

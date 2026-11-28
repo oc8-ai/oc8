@@ -1030,6 +1030,12 @@ class PrincipalUsageDTO(CamelModel):
     #: cache; `provider_cost_micros` already bills them at the cache rates.
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    #: Tokens (in + out) of models that have no price, so
+    #: `provider_cost_micros` leaves them out, and those models as
+    #: "provider/model". A report that only summed known prices showed a cost
+    #: far below the provider's bill without saying why.
+    unpriced_tokens: int = 0
+    unpriced_models: list[str] = []
     #: The group's display name (the agent's or the department's), and for an
     #: agent row its department. Metadata an admin keeps (R2) even where the
     #: agent and department lists leave a member's personal ones out, so the
