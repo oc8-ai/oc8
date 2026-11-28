@@ -16,6 +16,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { EditHttpToolsDialog } from "@/components/edit-http-tools-dialog";
+import { ToolScopesDialog } from "@/components/tool-scopes-dialog";
 import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
 import { useCustomServerSources } from "@/edition/composition";
 import { useConfirm } from "@/hooks/use-confirm";
@@ -31,6 +32,7 @@ import {
 import { useMay } from "@/lib/governance-hooks";
 import { useHttpTools } from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
+import { useToolScopes } from "@/lib/tool-scopes";
 import { cn } from "@/lib/utils";
 
 type HealthStatus = "untested" | "ok" | "error";
@@ -337,6 +339,12 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
   const editor =
     mayEditTools && httpTools ? editors.find((s) => s.canEdit?.(httpTools)) : undefined;
   const [editingTools, setEditingTools] = useState(false);
+  // A server's own tools (stdio, SSE, streamable HTTP): which of them only
+  // read. The server says whether this connection's plugin classifies them
+  // itself (`editable`).
+  const mayClassify = connection.transport !== "manual_http" && may("plugin:manage");
+  const { data: toolScopes } = useToolScopes(mayClassify ? connection.id : null);
+  const [classifying, setClassifying] = useState(false);
   const status = healthStatusOf(connection);
   const tools = Array.isArray(connection.health?.tools)
     ? (connection.health.tools as unknown[]).filter((x): x is string => typeof x === "string")
@@ -375,9 +383,22 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
           onClose={() => setEditingTools(false)}
         />
       )}
+      {classifying && (
+        <ToolScopesDialog connectionId={connection.id} onClose={() => setClassifying(false)} />
+      )}
       <div className="flex items-center justify-between">
         <HealthBadge status={status} />
         <div className="flex items-center gap-1.5">
+          {toolScopes?.editable && toolScopes.tools.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setClassifying(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <Pencil className="h-3 w-3" />
+              {t("Classify tools", "Werkzeuge einstufen")}
+            </button>
+          )}
           {editor && (
             <button
               type="button"

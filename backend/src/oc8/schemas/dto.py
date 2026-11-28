@@ -1277,6 +1277,24 @@ class HttpToolsSnapshotDTO(CamelModel):
     openapi: ImportMetadataDTO | None = None
 
 
+class ConnectionToolScopesDTO(CamelModel):
+    """Which of a connection's tools only read and which modify.
+
+    `tools` is what the server offered at its last successful connection
+    test, plus any name already classified. A tool in neither list requires
+    `modify` (`authz.pdp.required_right`). `editable` is False where the
+    connection's plugin classifies its tools itself, or where an HTTP API's
+    endpoints editor owns the classification.
+    """
+
+    connection_id: str
+    name: str
+    tools: list[str] = []
+    read: list[str] = []
+    modify: list[str] = []
+    editable: bool = True
+
+
 class ConnectionToolNamesDTO(CamelModel):
     names: list[str] = []
     #: Same names split by `authz.pdp.required_right`'s classification, so a
