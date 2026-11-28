@@ -27,7 +27,13 @@ from oc8.api.v1._serializers import member_to_dto, seat_to_dto
 from oc8.api.v1.members import _member_dto
 from oc8.audit import append_event
 from oc8.auth import DevIdentityProvider, Principal, get_identity_provider
-from oc8.auth.password import PasswordHashingError, hash_password, verify_password
+from oc8.auth.password import (
+    PasswordHashingError,
+    hash_password,
+    password_fingerprint,
+    verify_password,
+)
+from oc8.auth.provider import mint_password_session
 from oc8.auth.second_factors import sign_in_address_changed
 from oc8.auth.totp_gate import second_factor_gate
 from oc8.authz.permissions import MEMBER_ROLE
@@ -1048,11 +1054,11 @@ async def password_setup(body: PasswordSetupRequest) -> PasswordSessionResponse:
 
     # Mint a token for this new member
     provider = get_identity_provider()
-    token = provider.mint(
+    token = mint_password_session(
         tenant_id=org.id,
         subject=body.email,
         role="org_admin",  # Initial admin
-        kind="operator",
+        password_hash=password_hash,
     )
 
     # Verify the token to return principal info
@@ -1202,11 +1208,8 @@ async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
     # `totp_grace_expires_at` is non-None only for a member whose clock is
     # actually running (the frontend's nag banner); an opt-in, non-mandatory
     # member has no clock at all and gets exactly the response they always got.
-    token = provider.mint(
-        tenant_id=org.id,
-        subject=subject,
-        role=token_role,
-        kind="operator",
+    token = mint_password_session(
+        tenant_id=org.id, subject=subject, role=token_role, password_hash=password_hash
     )
     principal = provider.verify(token)
     return PasswordSessionResponse(
@@ -1261,19 +1264,33 @@ async def renew_session(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session too old; sign in again")
     member = (
         await db.execute(
-            select(m.OrgMember.id).where(
+            select(m.OrgMember).where(
                 m.OrgMember.subject == principal.subject, m.OrgMember.deleted_at.is_(None)
             )
         )
     ).scalar_one_or_none()
-    if member is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "no such member; sign in again")
+    # The token names the password hash it was signed in with; a member whose
+    # password changed since (or who has none now) signs in again.
+    if (
+        member is None
+        or member.password_hash is None
+        or claims.get("pwd") != password_fingerprint(member.password_hash)
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "sign in again")
+    # The same 2FA decision as a sign-in: once it would demand enrolling a
+    # second factor, a renewal no longer hands out a session that skips it. (A
+    # member who owes a code at sign-in passed it then: that is this session.)
+    if (await second_factor_gate(db, member_id=member.id)).requires_totp_enrollment:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "set up two-factor authentication first")
+    # The role claim is carried over unchanged, as `mint_full_session` does: a
+    # renewal never changes what the session may do, and an assigned role_id
+    # overrides the claim on every request anyway.
     return SessionRenewResponse(
-        token=provider.mint(
+        token=mint_password_session(
             tenant_id=principal.tenant_id,
             subject=principal.subject,
             role=principal.role,
-            kind="operator",
+            password_hash=member.password_hash,
             auth_time=signed_in,
         )
     )

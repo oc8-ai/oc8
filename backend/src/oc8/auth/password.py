@@ -12,6 +12,8 @@ are fail-closed on any error.
 
 from __future__ import annotations
 
+import hashlib
+
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
@@ -60,7 +62,7 @@ def hash_password(plaintext: str) -> str:
     except Exception as exc:
         # Catch all exceptions from Argon2: convert to our type to prevent
         # leaking implementation details up the stack.
-        raise PasswordHashingError(f"Failed to hash password") from exc
+        raise PasswordHashingError("Failed to hash password") from exc
 
 
 def verify_password(plaintext: str, stored_hash: str) -> bool:
@@ -95,3 +97,14 @@ def verify_password(plaintext: str, stored_hash: str) -> bool:
         # Any other exception from Argon2 (e.g., memory pressure during verify).
         # Fail closed: return False to deny access rather than escalating.
         return False
+
+
+def password_fingerprint(stored_hash: str) -> str:
+    """A short digest of a stored password hash, carried in a session token.
+
+    Renewing a session compares it with the member's current hash, so changing
+    the password -- what a person does after a token leaked -- stops every
+    session minted before the change from being renewed. A digest of the salted
+    Argon2 hash, never of the password: it says nothing about the password.
+    """
+    return hashlib.sha256(stored_hash.encode()).hexdigest()[:32]

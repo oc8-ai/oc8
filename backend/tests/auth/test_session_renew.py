@@ -19,6 +19,7 @@ from httpx import ASGITransport, AsyncClient
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
+from oc8.auth.password import password_fingerprint
 from oc8.config import get_settings
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
@@ -26,8 +27,15 @@ from tests.conftest import AppSessionFactory
 pytestmark = pytest.mark.asyncio
 
 
+_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo"
+
+
 async def _member(
-    app_session: AppSessionFactory, tenant: uuid.UUID, *, deleted: bool = False
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    *,
+    deleted: bool = False,
+    password_hash: str | None = _HASH,
 ) -> str:
     subject = f"anna-{uuid.uuid4()}@example.com"
     async with app_session(tenant) as db:
@@ -38,6 +46,7 @@ async def _member(
                 subject_uuid=uuid.uuid4(),
                 display_name="Anna",
                 all_departments=True,
+                password_hash=password_hash,
                 deleted_at=dt.datetime.now(tz=dt.UTC) if deleted else None,
             )
         )
@@ -61,6 +70,7 @@ def _token(tenant: uuid.UUID, subject: str, **claims: object) -> str:
         "scopes": [],
         "iat": now,
         "exp": now + 600,
+        "pwd": password_fingerprint(_HASH),
         **claims,
     }
     return jwt.encode(payload, s.jwt_secret, algorithm=s.jwt_alg)
@@ -91,6 +101,7 @@ async def test_a_valid_session_gets_a_fresh_token_that_keeps_the_sign_in_time(
     assert new["sub"] == subject and new["tenant_id"] == str(tenant)
     assert new["role"] == "member" and new["scopes"] == []
     assert new["auth_time"] == signed_in
+    assert new["pwd"] == password_fingerprint(_HASH)
     assert int(new["exp"]) > int(_claims(old)["exp"])  # type: ignore[call-overload]
 
 
@@ -131,3 +142,55 @@ async def test_an_agent_token_is_not_renewed(app_session: AppSessionFactory) -> 
     subject = await _member(app_session, tenant)
     code, _ = await _renew(_token(tenant, subject, kind="agent"))
     assert code in (401, 403)
+
+
+async def test_a_session_from_before_a_password_change_is_not_renewed(
+    app_session: AppSessionFactory,
+) -> None:
+    """Changing a password -- the thing to do after a token leaked -- ends the
+    chain: the token names a password hash the member no longer has."""
+    tenant = uuid.uuid4()
+    subject = await _member(app_session, tenant, password_hash="$argon2id$v=19$other")
+    code, _ = await _renew(_token(tenant, subject))
+    assert code == 401
+
+
+async def test_a_token_naming_no_password_is_not_renewed(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    subject = await _member(app_session, tenant)
+    code, _ = await _renew(_token(tenant, subject, pwd=None))
+    assert code == 401
+
+
+async def test_a_member_without_a_password_is_not_renewed(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    subject = await _member(app_session, tenant, password_hash=None)
+    code, _ = await _renew(_token(tenant, subject))
+    assert code == 401
+
+
+async def test_a_member_whose_two_factor_grace_ran_out_is_not_renewed(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sign-in would now demand enrolling a second factor, so a renewal must
+    not keep handing out a full session that skips it."""
+    import oc8.api.v1.auth as auth_api
+    from oc8.auth.totp_gate import TotpGateOutcome
+
+    async def gate(db: object, *, member_id: uuid.UUID) -> TotpGateOutcome:
+        return TotpGateOutcome(full_session_ok=False, requires_totp_enrollment=True)
+
+    monkeypatch.setattr(auth_api, "second_factor_gate", gate)
+    tenant = uuid.uuid4()
+    subject = await _member(app_session, tenant)
+    code, _ = await _renew(_token(tenant, subject))
+    assert code == 403
+
+
+async def test_a_full_session_minted_at_sign_in_names_the_password() -> None:
+    from oc8.auth.provider import mint_password_session
+
+    token = mint_password_session(
+        tenant_id=uuid.uuid4(), subject="a", role="member", password_hash=_HASH
+    )
+    assert _claims(token)["pwd"] == password_fingerprint(_HASH)

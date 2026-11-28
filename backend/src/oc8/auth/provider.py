@@ -74,6 +74,7 @@ class DevIdentityProvider:
         kind: PrincipalKind = "operator",
         scopes: list[str] | None = None,
         auth_time: int | None = None,
+        password_fp: str | None = None,
     ) -> str:
         """`auth_time` is when the person signed in: now for a fresh sign-in,
         carried over unchanged by a renewal, which is what caps the chain."""
@@ -87,6 +88,7 @@ class DevIdentityProvider:
             "scopes": scopes or [],
             "iat": int(now.timestamp()),
             "auth_time": auth_time if auth_time is not None else int(now.timestamp()),
+            **({"pwd": password_fp} if password_fp else {}),
             "exp": int((now + dt.timedelta(seconds=settings.jwt_ttl_seconds)).timestamp()),
         }
         return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
@@ -105,6 +107,34 @@ class DevIdentityProvider:
 
 
 _dev_provider: IdentityProvider = DevIdentityProvider()
+
+
+def mint_password_session(
+    *,
+    tenant_id: uuid.UUID,
+    subject: str,
+    role: str,
+    password_hash: str | None,
+    auth_time: int | None = None,
+) -> str:
+    """A full operator session for a password sign-in.
+
+    With the Community provider it names the member's password hash (see
+    `password_fingerprint`), which `POST /auth/session/renew` requires; an
+    edition's own provider mints its plain token and renews its own way.
+    """
+    from oc8.auth.password import password_fingerprint
+
+    provider = get_identity_provider()
+    if isinstance(provider, DevIdentityProvider):
+        return provider.mint(
+            tenant_id=tenant_id,
+            subject=subject,
+            role=role,
+            auth_time=auth_time,
+            password_fp=password_fingerprint(password_hash) if password_hash else None,
+        )
+    return provider.mint(tenant_id=tenant_id, subject=subject, role=role)
 
 
 def get_identity_provider() -> IdentityProvider:
