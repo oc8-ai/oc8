@@ -15,7 +15,8 @@ import hashlib
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +26,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.api.v1._serializers import member_to_dto, seat_to_dto
 from oc8.api.v1.members import _member_dto
 from oc8.audit import append_event
-from oc8.auth import Principal, get_identity_provider
+from oc8.auth import DevIdentityProvider, Principal, get_identity_provider
 from oc8.auth.password import PasswordHashingError, hash_password, verify_password
 from oc8.auth.second_factors import sign_in_address_changed
 from oc8.auth.totp_gate import second_factor_gate
@@ -1217,6 +1218,64 @@ async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
             if outcome.totp_grace_expires_at is not None
             else None
         ),
+    )
+
+
+class SessionRenewResponse(CamelModel):
+    token: str
+
+
+@router.post(
+    "/auth/session/renew",
+    response_model=SessionRenewResponse,
+    dependencies=[Depends(unguarded("self-service: renews only the caller's own session"))],
+)
+async def renew_session(
+    request: Request, db: DbSession, principal: CurrentPrincipal
+) -> SessionRenewResponse:
+    """Swap a still-valid Community session token for a fresh one.
+
+    A token lives `jwt_ttl_seconds` and could not be extended, so a person
+    still at work an hour after signing in was signed out on their next
+    request, losing whatever they had not saved. The page now renews while it
+    is in use. Only a full operator session is renewed (never a 2FA challenge
+    or enrollment token -- `deny_totp_pending_principals` refuses those before
+    this runs -- nor an agent's), only for a member that still exists, and
+    only up to `session_max_seconds` after the original sign-in, which the
+    renewed token carries over unchanged. An edition with its own identity
+    provider renews through it instead, so this answers 404 there.
+    """
+    provider = get_identity_provider()
+    if not isinstance(provider, DevIdentityProvider):
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "sessions are renewed by the identity provider"
+        )
+    if principal.kind != "operator" or principal.scopes:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "only a full session can be renewed")
+    settings = get_settings()
+    token = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+    claims = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
+    signed_in = int(claims.get("auth_time") or claims.get("iat") or 0)
+    now = int(dt.datetime.now(tz=dt.UTC).timestamp())
+    if now - signed_in > settings.session_max_seconds:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session too old; sign in again")
+    member = (
+        await db.execute(
+            select(m.OrgMember.id).where(
+                m.OrgMember.subject == principal.subject, m.OrgMember.deleted_at.is_(None)
+            )
+        )
+    ).scalar_one_or_none()
+    if member is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "no such member; sign in again")
+    return SessionRenewResponse(
+        token=provider.mint(
+            tenant_id=principal.tenant_id,
+            subject=principal.subject,
+            role=principal.role,
+            kind="operator",
+            auth_time=signed_in,
+        )
     )
 
 

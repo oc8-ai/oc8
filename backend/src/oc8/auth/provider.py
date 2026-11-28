@@ -73,7 +73,10 @@ class DevIdentityProvider:
         role: str,
         kind: PrincipalKind = "operator",
         scopes: list[str] | None = None,
+        auth_time: int | None = None,
     ) -> str:
+        """`auth_time` is when the person signed in: now for a fresh sign-in,
+        carried over unchanged by a renewal, which is what caps the chain."""
         settings = get_settings()
         now = dt.datetime.now(tz=dt.UTC)
         payload = {
@@ -83,6 +86,7 @@ class DevIdentityProvider:
             "kind": kind,
             "scopes": scopes or [],
             "iat": int(now.timestamp()),
+            "auth_time": auth_time if auth_time is not None else int(now.timestamp()),
             "exp": int((now + dt.timedelta(seconds=settings.jwt_ttl_seconds)).timestamp()),
         }
         return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
