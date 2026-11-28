@@ -97,6 +97,9 @@ msgstr "{name} wordt nog steeds gelezen door de gegevensbronnen {sources}. Kies 
 msgid "{name} will send mail and messages to customers and partners without a person approving each one. Guardrails and usage limits still apply, so set a daily limit on each tool that sends, so a mistake can't send hundreds of messages."
 msgstr "{name} verstuurt e-mails en berichten naar klanten en partners zonder dat elk bericht afzonderlijk door een persoon wordt goedgekeurd. Er zijn echter vangrails en gebruikslimieten van kracht; stel daarom voor elke tool die berichten verstuurt een daglimiet in, zodat een eventuele fout niet kan leiden tot het versturen van honderden berichten."
 
+msgid "{tokens} tokens are not in the spend above because these models have no price: {models}. Add a price under Models → Model pricing."
+msgstr ""
+
 msgid "{tools}: {name} can use it once the department turns it on in its tool settings."
 msgstr "{tools}: {name} kan dit gebruiken zodra de afdeling het inschakelt in de instellingen voor tools."
 
