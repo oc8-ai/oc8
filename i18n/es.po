@@ -35,6 +35,9 @@ msgstr "(vacío)"
 msgid "(no longer allowed by your organisation)"
 msgstr "Gestiona los roles de usuario de tu organización."
 
+msgid "(no task)"
+msgstr ""
+
 #, fuzzy
 msgid "(optional)"
 msgstr "(opcional)"
@@ -5821,6 +5824,10 @@ msgid "Open responsibilities and follow-ups"
 msgstr "Abrir responsabilidades y seguimientos"
 
 #, fuzzy
+msgid "Open Schedule"
+msgstr "Programación"
+
+#, fuzzy
 msgid "Open the agent"
 msgstr "Abrir el agente"
 
@@ -7778,6 +7785,9 @@ msgstr "Tarea creada"
 msgid "Task distribution"
 msgstr "Distribución de tareas"
 
+msgid "Task for each run"
+msgstr ""
+
 #, fuzzy
 msgid "tasks"
 msgstr "tareas"
@@ -8907,10 +8917,6 @@ msgid "Try again"
 msgstr "Reintentar"
 
 #, fuzzy
-msgid "Try again in a moment."
-msgstr "Inténtalo de nuevo en un momento."
-
-#, fuzzy
 msgid "Turn off"
 msgstr "Desactivar"
 
@@ -9404,6 +9410,9 @@ msgstr "Lo que se devolvió"
 msgid "What does it do?"
 msgstr "¿Qué hace?"
 
+msgid "What every scheduled run is told to do. A scheduled run gets this task on its own, without the conversation you are reading — change it under Schedule on the Configuration tab."
+msgstr ""
+
 #, fuzzy
 msgid "What happens if you agree"
 msgstr "Qué ocurre si aceptas"
@@ -9442,6 +9451,9 @@ msgstr "¿Qué debe hacer este agente? Se envía con cada ejecución."
 #, fuzzy
 msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
 msgstr "¿Qué debe hacer este agente? Esto se convierte en sus instrucciones permanentes; puedes afinarlas después en la página del propio agente."
+
+msgid "What the agent is told to do on every scheduled run — its standing Instructions always apply on top of this."
+msgstr ""
 
 #, fuzzy
 msgid "What this assistant gets"
@@ -9515,6 +9527,9 @@ msgstr "Con recomendación"
 #, fuzzy
 msgid "within limits"
 msgstr "dentro de los límites"
+
+msgid "Without a task, the runs this schedule starts have nothing to work on and no title on the board."
+msgstr ""
 
 #, fuzzy
 msgid "Work"

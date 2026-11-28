@@ -30,6 +30,9 @@ msgstr "(tom)"
 msgid "(no longer allowed by your organisation)"
 msgstr "Administrér brugerroller for Deres organisation."
 
+msgid "(no task)"
+msgstr ""
+
 msgid "(optional)"
 msgstr "(valgfri)"
 
@@ -5140,6 +5143,11 @@ msgid "Open responsibilities and follow-ups"
 msgstr ""
 
 #, fuzzy
+#| msgid "Schedule"
+msgid "Open Schedule"
+msgstr "Tidsplan"
+
+#, fuzzy
 #| msgid "Create agent"
 msgid "Open the agent"
 msgstr "Opret agent"
@@ -6860,6 +6868,9 @@ msgstr "Opgave oprettet"
 msgid "Task distribution"
 msgstr "Opgavefordeling"
 
+msgid "Task for each run"
+msgstr ""
+
 msgid "tasks"
 msgstr "opgaver"
 
@@ -7854,9 +7865,6 @@ msgstr ""
 msgid "Try again"
 msgstr "Prøv igen"
 
-msgid "Try again in a moment."
-msgstr "Prøv igen om et øjeblik."
-
 msgid "Turn off"
 msgstr "Slå fra"
 
@@ -8313,6 +8321,9 @@ msgstr ""
 msgid "What does it do?"
 msgstr "Hvad gør den?"
 
+msgid "What every scheduled run is told to do. A scheduled run gets this task on its own, without the conversation you are reading — change it under Schedule on the Configuration tab."
+msgstr ""
+
 msgid "What happens if you agree"
 msgstr "Hvad sker der, hvis du accepterer"
 
@@ -8346,6 +8357,9 @@ msgstr "Hvad skal denne agent gøre? Sendes med hver kørsel."
 
 msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
 msgstr "Hvad skal denne agent gøre? Dette bliver dens faste instruktioner — du kan forfine dem senere på agentens egen side."
+
+msgid "What the agent is told to do on every scheduled run — its standing Instructions always apply on top of this."
+msgstr ""
 
 #, fuzzy
 #| msgid "What does it do?"
@@ -8411,6 +8425,9 @@ msgstr "Med anbefaling"
 #| msgid "With limits"
 msgid "within limits"
 msgstr "Med grænser"
+
+msgid "Without a task, the runs this schedule starts have nothing to work on and no title on the board."
+msgstr ""
 
 msgid "Work"
 msgstr ""

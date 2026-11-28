@@ -30,6 +30,9 @@ msgstr "(leer)"
 msgid "(no longer allowed by your organisation)"
 msgstr "Verwalte Benutzerrollen für deine Organisation."
 
+msgid "(no task)"
+msgstr ""
+
 msgid "(optional)"
 msgstr "(optional)"
 
@@ -4789,6 +4792,11 @@ msgstr "Datensatz öffnen"
 msgid "Open responsibilities and follow-ups"
 msgstr "Offene Aufgaben und Nachfassungen"
 
+#, fuzzy
+#| msgid "Schedule"
+msgid "Open Schedule"
+msgstr "Zeitplan"
+
 msgid "Open the agent"
 msgstr "Agenten öffnen"
 
@@ -6370,6 +6378,9 @@ msgstr "Aufgabe erstellt"
 msgid "Task distribution"
 msgstr "Aufgabenverteilung"
 
+msgid "Task for each run"
+msgstr ""
+
 msgid "tasks"
 msgstr "Aufgaben"
 
@@ -7306,9 +7317,6 @@ msgstr ""
 msgid "Try again"
 msgstr "Erneut versuchen"
 
-msgid "Try again in a moment."
-msgstr "Bitte versuche es in Kürze erneut."
-
 msgid "Turn off"
 msgstr "Ausschalten"
 
@@ -7739,6 +7747,9 @@ msgstr "Was zurückkam"
 msgid "What does it do?"
 msgstr "Was macht sie?"
 
+msgid "What every scheduled run is told to do. A scheduled run gets this task on its own, without the conversation you are reading — change it under Schedule on the Configuration tab."
+msgstr ""
+
 msgid "What happens if you agree"
 msgstr "Was passiert, wenn du zustimmst"
 
@@ -7768,6 +7779,9 @@ msgstr "Was soll dieser Agent tun? Wird bei jedem Lauf mitgeschickt."
 
 msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
 msgstr "Was soll dieser Agent tun? Das wird zu seinen dauerhaften Anweisungen — du kannst sie später auf der Agent-Seite verfeinern."
+
+msgid "What the agent is told to do on every scheduled run — its standing Instructions always apply on top of this."
+msgstr ""
 
 #, fuzzy
 #| msgid "What is waiting on me?"
@@ -7829,6 +7843,9 @@ msgstr "Mit Empfehlung"
 
 msgid "within limits"
 msgstr "in Grenzen"
+
+msgid "Without a task, the runs this schedule starts have nothing to work on and no title on the board."
+msgstr ""
 
 msgid "Work"
 msgstr "Arbeit"
