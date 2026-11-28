@@ -638,6 +638,12 @@ class DataSourceDTO(CamelModel):
     last_sync_skipped: dict[str, int] | None = None
     #: Note codes the last finished sync recorded (e.g. `api_key_recommended`).
     last_sync_notes: list[str] | None = None
+    #: The newest sync job of any state (`queued` | `running` | `succeeded` |
+    #: `partial` | `failed`), or null before the first. The page reads a
+    #: sync's progress from here, so it is right however the sync was started
+    #: and after the page was left.
+    latest_job_id: str | None = None
+    latest_job_status: str | None = None
     deleted_at: str | None = None
     #: Non-secret connector config only (e.g. `bucket`, `prefix`, and a
     #: `credential`-typed property's CREDENTIAL ID -- never a resolved
