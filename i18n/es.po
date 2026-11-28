@@ -5623,6 +5623,9 @@ msgstr "Aquí no hay nada."
 msgid "Nothing in progress right now."
 msgstr "Nada en curso ahora mismo."
 
+msgid "Nothing installed matches this view yet. Install a Capa from the Available tab first."
+msgstr ""
+
 #, fuzzy
 msgid "Nothing is granted for it now."
 msgstr "Nada en curso ahora mismo."

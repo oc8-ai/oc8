@@ -4309,6 +4309,9 @@ msgstr "Hier staat niets."
 msgid "Nothing in progress right now."
 msgstr "Er is nu niets in uitvoering."
 
+msgid "Nothing installed matches this view yet. Install a Capa from the Available tab first."
+msgstr ""
+
 msgid "Nothing is granted for it now."
 msgstr "Er zijn nu geen rechten voor verleend."
 

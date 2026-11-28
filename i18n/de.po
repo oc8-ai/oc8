@@ -4619,6 +4619,9 @@ msgstr "Hier ist nichts."
 msgid "Nothing in progress right now."
 msgstr "Gerade ist nichts in Arbeit."
 
+msgid "Nothing installed matches this view yet. Install a Capa from the Available tab first."
+msgstr ""
+
 #, fuzzy
 #| msgid "Nothing in progress right now."
 msgid "Nothing is granted for it now."
