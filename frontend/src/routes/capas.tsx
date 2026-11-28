@@ -195,7 +195,10 @@ export function CapasPage() {
     groupBy: null,
     includeArchived: false,
     page: 1,
-    pageSize: 200,
+    // The whole catalog in one page: the tabs, the type and trust chips and
+    // their counts all slice it in the browser, and a 200-row page of a
+    // 300-capa catalog left whole types out with nothing saying so.
+    pageSize: CATALOG_PAGE_SIZE,
   });
   const {
     data: pluginsPage,
@@ -203,7 +206,9 @@ export function CapasPage() {
     error,
   } = useAvailablePlugins({
     search: queryState.search,
-    filters: queryState.filters,
+    // Type is narrowed below, in the browser, not on the server: the chips
+    // count what each type holds on the current tab, which needs all of it.
+    filters: {},
     groupBy: queryState.groupBy,
     page: queryState.page,
     pageSize: queryState.pageSize,
@@ -255,9 +260,24 @@ export function CapasPage() {
   // already holds the whole tab, so there's no partial-page mismatch to
   // worry about.
   const [trustFilter, setTrustFilter] = useState<string | null>(null);
-  const shownFiltered = useMemo(
-    () => (trustFilter ? shown.filter((p) => p.trust === trustFilter) : shown),
+  const typeFilter = queryState.filters.type ?? null;
+  // Each chip counts what the current tab holds for it -- the type row under
+  // the trust choice, the trust row under the type choice -- and a chip with
+  // nothing behind it is not offered, so no click ever lands on an empty list.
+  const typeCounts = useMemo(
+    () => countBy(trustFilter ? shown.filter((p) => p.trust === trustFilter) : shown, "type"),
     [shown, trustFilter],
+  );
+  const trustCounts = useMemo(
+    () => countBy(typeFilter ? shown.filter((p) => p.type === typeFilter) : shown, "trust"),
+    [shown, typeFilter],
+  );
+  const shownFiltered = useMemo(
+    () =>
+      shown.filter(
+        (p) => (!typeFilter || p.type === typeFilter) && (!trustFilter || p.trust === trustFilter),
+      ),
+    [shown, typeFilter, trustFilter],
   );
 
   const grouped = useMemo(
@@ -492,16 +512,18 @@ export function CapasPage() {
                 label={t("All", "Alle")}
                 onClick={() => setQueryState((s) => ({ ...s, filters: {}, page: 1 }))}
               />
-              {Object.entries(TYPE_LABELS).map(([value, label]) => (
-                <CategoryChip
-                  key={value}
-                  active={queryState.filters.type === value}
-                  label={t(label.en, label.de)}
-                  onClick={() =>
-                    setQueryState((s) => ({ ...s, filters: { type: value }, page: 1 }))
-                  }
-                />
-              ))}
+              {Object.entries(TYPE_LABELS)
+                .filter(([value]) => (typeCounts[value] ?? 0) > 0 || typeFilter === value)
+                .map(([value, label]) => (
+                  <CategoryChip
+                    key={value}
+                    active={typeFilter === value}
+                    label={`${t(label.en, label.de)} (${typeCounts[value] ?? 0})`}
+                    onClick={() =>
+                      setQueryState((s) => ({ ...s, filters: { type: value }, page: 1 }))
+                    }
+                  />
+                ))}
             </div>
 
             <div className="flex flex-wrap gap-1.5">
@@ -511,15 +533,17 @@ export function CapasPage() {
                 onClick={() => setTrustFilter(null)}
                 muted
               />
-              {Object.entries(TRUST_LABELS).map(([value, label]) => (
-                <CategoryChip
-                  key={value}
-                  active={trustFilter === value}
-                  label={t(label.en, label.de)}
-                  onClick={() => setTrustFilter(value)}
-                  muted
-                />
-              ))}
+              {Object.entries(TRUST_LABELS)
+                .filter(([value]) => (trustCounts[value] ?? 0) > 0 || trustFilter === value)
+                .map(([value, label]) => (
+                  <CategoryChip
+                    key={value}
+                    active={trustFilter === value}
+                    label={`${t(label.en, label.de)} (${trustCounts[value] ?? 0})`}
+                    onClick={() => setTrustFilter(value)}
+                    muted
+                  />
+                ))}
             </div>
           </Panel>
 
@@ -538,7 +562,12 @@ export function CapasPage() {
           {!isLoading && !error && shownFiltered.length === 0 && (
             <Panel className="p-5 text-sm text-muted-foreground">
               {tab === "installed"
-                ? t("No Capas installed yet.", "Noch keine Capas installiert.")
+                ? availableAll.length > 0
+                  ? t(
+                      "Nothing installed matches this view yet. Install a Capa from the Available tab first.",
+                      "Hier ist noch nichts installiert, das passt. Installiere zuerst eine Capa im Tab „Verfügbar“.",
+                    )
+                  : t("No Capas installed yet.", "Noch keine Capas installiert.")
                 : t(
                     "Nothing new on disk. Drop a folder containing a plugin.toml into the plugins directory, then reload.",
                     "Nichts Neues auf der Festplatte. Einen Ordner mit einer plugin.toml ins Plugin-Verzeichnis legen und neu laden.",
@@ -683,6 +712,15 @@ function CapaIcon({ plugin }: { plugin: DiscoveredCapa }) {
       )}
     </div>
   );
+}
+
+/** The largest page `/capas/available` serves -- enough for the whole catalog. */
+const CATALOG_PAGE_SIZE = 1000;
+
+function countBy(items: DiscoveredCapa[], key: "type" | "trust"): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) counts[item[key]] = (counts[item[key]] ?? 0) + 1;
+  return counts;
 }
 
 function CategoryChip({

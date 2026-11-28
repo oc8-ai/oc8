@@ -340,4 +340,65 @@ describe("Capas list page", () => {
       within(notConfigurableCard).getByTitle(/more info|weitere informationen/i),
     ).toBeInTheDocument();
   });
+
+  it("asks the server for the whole catalog, not a 200-row slice of it", () => {
+    renderPage();
+    const lastCall = useAvailablePluginsMock.mock.calls.at(-1)?.[0] as { pageSize: number };
+    expect(lastCall.pageSize).toBeGreaterThan(200);
+  });
+
+  it("filters by type in the browser and counts each chip, so a type is never an empty surprise", () => {
+    useAvailablePluginsMock.mockReturnValue({
+      data: {
+        items: [
+          capa({ pluginId: "odoo", name: "odoo", label: "Odoo", type: "tool_pack" }),
+          capa({ pluginId: "jira", name: "jira", label: "Jira", type: "tool_pack" }),
+          capa({ pluginId: "sales", name: "sales", label: "Sales", type: "agent_template" }),
+        ],
+        totalCount: 3,
+      },
+      isLoading: false,
+      error: null,
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Available/ }));
+
+    // Types with nothing on this tab get no chip; the others say how many.
+    expect(screen.queryByRole("button", { name: /^Flow template/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Tool pack.*2/ }));
+
+    expect(screen.getByText("Odoo")).toBeInTheDocument();
+    expect(screen.getByText("Jira")).toBeInTheDocument();
+    expect(screen.queryByText("Sales")).toBeNull();
+    // The server is not asked to narrow by type: the counts need the whole tab.
+    const lastCall = useAvailablePluginsMock.mock.calls.at(-1)?.[0] as {
+      filters: Record<string, string>;
+    };
+    expect(lastCall.filters.type).toBeUndefined();
+  });
+
+  it("offers no trust chip that no capa carries", () => {
+    useAvailablePluginsMock.mockReturnValue({
+      data: { items: [capa({ pluginId: "a", name: "a", label: "A" })], totalCount: 1 },
+      isLoading: false,
+      error: null,
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Available/ }));
+    expect(screen.queryByRole("button", { name: /^Verified/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Community/ })).toBeNull();
+  });
+
+  it("says where to look when a filter on Installed finds nothing", () => {
+    useAvailablePluginsMock.mockReturnValue({
+      data: {
+        items: [capa({ pluginId: "odoo", name: "odoo", label: "Odoo", type: "tool_pack" })],
+        totalCount: 1,
+      },
+      isLoading: false,
+      error: null,
+    });
+    renderPage();
+    expect(screen.getByText(/available tab/i)).toBeInTheDocument();
+  });
 });
