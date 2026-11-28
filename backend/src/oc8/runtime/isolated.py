@@ -170,12 +170,22 @@ class DockerIsolatedRuntime:
             # leg that text is the approval's focused resume instruction, not the
             # original task.
             ctx["task"] = task_text
-            if pre_decided:
+            # Woken by the answer to the run's own ask_user: the leg before
+            # parked on it, and the executor appended the answers to the task
+            # text. A connected server's question is different -- its answer
+            # finishes the held call inside the transcript (_finish_elicitation),
+            # so that resume keeps it.
+            answered_ask = (ctx.get("isolated_result") or {}).get(
+                "status"
+            ) == "waiting_for_input" and not ctx.get("pending_elicitation")
+            if pre_decided or answered_ask:
                 # A resume leg starts a fresh conversation, mirroring the
                 # in-process engine (which simply runs again with the resume
                 # instruction). Keeping the old transcript would replay a
                 # dangling assistant tool_call -- the suspended call never got a
-                # tool result -- which providers reject.
+                # tool result -- which providers reject. After an answer it
+                # would also never show the model the answer: the preamble,
+                # built from the task text, only runs on an empty transcript.
                 ctx["transcript"] = []
                 ctx["steps"] = 0
                 ctx.pop("isolated_result", None)
